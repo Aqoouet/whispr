@@ -200,14 +200,10 @@ func (r *Recorder) runWASAPIWorker(stopCh <-chan struct{}, initCh chan<- wasapiS
 	ordered := orderWASAPIEndpoints(selection, endpoints, defaultID)
 	attempts := make([]openAttempt, 0, len(ordered))
 	for _, endpoint := range ordered {
-		audioClient, captureClient, input, output, err := openWASAPIAudioClient(enumerator, endpoint)
+		audioClient, captureClient, input, output, err := openWASAPIAudioClientAutoConvert(enumerator, endpoint)
 		if err != nil {
-			attempts = append(attempts, openAttempt{Backend: captureBackendWASAPI, Detail: fmt.Sprintf("target=%s", displayDeviceName(endpoint.Name)), Failure: err.Error()})
-			audioClient, captureClient, input, output, err = openWASAPIAudioClientAutoConvert(enumerator, endpoint)
-			if err != nil {
-				attempts = append(attempts, openAttempt{Backend: captureBackendWASAPI, Detail: fmt.Sprintf("target=%s autoconvert", displayDeviceName(endpoint.Name)), Failure: err.Error()})
-				continue
-			}
+			attempts = append(attempts, openAttempt{Backend: captureBackendWASAPI, Detail: fmt.Sprintf("target=%s autoconvert", displayDeviceName(endpoint.Name)), Failure: err.Error()})
+			continue
 		}
 		if err := wasapiStartClient(audioClient); err != nil {
 			releaseCOM(captureClient)
@@ -308,33 +304,53 @@ func openWASAPIAudioClientAutoConvert(enumerator uintptr, endpoint DeviceInfo) (
 		return 0, 0, wasapiInputFormat{}, waveFormatEx{}, err
 	}
 
-	wfx := waveFormatEx{
-		FormatTag:      waveFormatPCM,
-		Channels:       1,
-		SamplesPerSec:  16000,
-		BitsPerSample:  16,
-		BlockAlign:     2,
-		AvgBytesPerSec: 32000,
+	type formatSpec struct {
+		rate uint32
+		bits uint16
 	}
-	flags := uintptr(audclntStreamFlagsAutoConvertPCM | audclntStreamFlagsSrcDefaultQuality)
-	if err := audioClientInitializeShared(audioClient, uintptr(unsafe.Pointer(&wfx)), 0, flags); err != nil {
-		releaseCOM(audioClient)
-		return 0, 0, wasapiInputFormat{}, waveFormatEx{}, err
+	formats := []formatSpec{
+		{48000, 16},
+		{44100, 16},
+		{16000, 16},
+		{8000, 16},
 	}
 
-	captureClient, err := audioClientGetCaptureClient(audioClient)
-	if err != nil {
-		releaseCOM(audioClient)
-		return 0, 0, wasapiInputFormat{}, waveFormatEx{}, err
+	var lastErr error
+	for _, spec := range formats {
+		wfx := waveFormatEx{
+			FormatTag:      waveFormatPCM,
+			Channels:       1,
+			SamplesPerSec:  spec.rate,
+			BitsPerSample:  spec.bits,
+			BlockAlign:     uint16(spec.bits / 8),
+			AvgBytesPerSec: spec.rate * uint32(spec.bits/8),
+		}
+		flags := uintptr(audclntStreamFlagsAutoConvertPCM | audclntStreamFlagsSrcDefaultQuality)
+		if err := audioClientInitializeShared(audioClient, uintptr(unsafe.Pointer(&wfx)), 0, flags); err != nil {
+			lastErr = err
+			continue
+		}
+
+		captureClient, err := audioClientGetCaptureClient(audioClient)
+		if err != nil {
+			releaseCOM(audioClient)
+			return 0, 0, wasapiInputFormat{}, waveFormatEx{}, err
+		}
+
+		input := wasapiInputFormat{
+			channels:      1,
+			samplesPerSec: spec.rate,
+			bitsPerSample: spec.bits,
+			validBits:     spec.bits,
+		}
+		return audioClient, captureClient, input, wfx, nil
 	}
 
-	input := wasapiInputFormat{
-		channels:      1,
-		samplesPerSec: 16000,
-		bitsPerSample: 16,
-		validBits:     16,
+	releaseCOM(audioClient)
+	if lastErr != nil {
+		return 0, 0, wasapiInputFormat{}, waveFormatEx{}, lastErr
 	}
-	return audioClient, captureClient, input, wfx, nil
+	return 0, 0, wasapiInputFormat{}, waveFormatEx{}, fmt.Errorf("no format supported")
 }
 
 func runWASAPICaptureLoop(audioClient uintptr, captureClient uintptr, input wasapiInputFormat, stopCh <-chan struct{}) ([]byte, error) {

@@ -113,6 +113,12 @@ type wasapiNegotiatedFormat struct {
 	needsFree bool
 }
 
+type wasapiSelectedFormat struct {
+	formatPtr         uintptr
+	needsFree         bool
+	ignoredClosestPtr uintptr
+}
+
 type wasapiCaptureResult struct {
 	data []byte
 	err  error
@@ -288,7 +294,7 @@ func openWASAPIAudioClientWithMixFormat(enumerator uintptr, endpoint DeviceInfo,
 		return 0, 0, wasapiInputFormat{}, waveFormatEx{}, err
 	}
 
-	negotiated, err := negotiateWASAPISharedFormat(audioClient, formatPtr, streamFlags)
+	negotiated, err := negotiateWASAPISharedFormat(audioClient, formatPtr, streamFlags, true)
 	coTaskMemFree(formatPtr)
 	if err != nil {
 		releaseCOM(audioClient)
@@ -330,7 +336,7 @@ func openWASAPIAudioClientAutoConvert(enumerator uintptr, endpoint DeviceInfo) (
 			AvgBytesPerSec: spec.rate * uint32(spec.channels) * uint32(spec.bits/8),
 		}
 		flags := uintptr(audclntStreamFlagsAutoConvertPCM | audclntStreamFlagsSrcDefaultQuality)
-		negotiated, err := negotiateWASAPISharedFormat(audioClient, uintptr(unsafe.Pointer(&wfx)), flags)
+		negotiated, err := negotiateWASAPISharedFormat(audioClient, uintptr(unsafe.Pointer(&wfx)), flags, false)
 		if err != nil {
 			releaseCOM(audioClient)
 			lastErr = err
@@ -549,29 +555,38 @@ func wasapiInitAttempts() []wasapiInitAttempt {
 	}
 }
 
-func negotiateWASAPISharedFormat(audioClient uintptr, requestedFormatPtr uintptr, streamFlags uintptr) (wasapiNegotiatedFormat, error) {
-	actualFormatPtr, needsFree, err := audioClientNegotiateSharedFormat(audioClient, requestedFormatPtr)
+func negotiateWASAPISharedFormat(audioClient uintptr, requestedFormatPtr uintptr, streamFlags uintptr, useClosestMatch bool) (wasapiNegotiatedFormat, error) {
+	selected, err := audioClientNegotiateSharedFormat(audioClient, requestedFormatPtr, useClosestMatch)
 	if err != nil {
 		return wasapiNegotiatedFormat{}, err
 	}
-	input, err := parseWASAPIInputFormat(actualFormatPtr)
+	ignoredClosestDetail := ""
+	if selected.ignoredClosestPtr != 0 {
+		ignoredClosestDetail = describeWaveFormat(selected.ignoredClosestPtr)
+		coTaskMemFree(selected.ignoredClosestPtr)
+	}
+
+	input, err := parseWASAPIInputFormat(selected.formatPtr)
 	if err != nil {
-		if needsFree {
-			coTaskMemFree(actualFormatPtr)
+		if selected.needsFree {
+			coTaskMemFree(selected.formatPtr)
 		}
 		return wasapiNegotiatedFormat{}, err
 	}
-	if err := initializeWASAPISharedClient(audioClient, actualFormatPtr, streamFlags); err != nil {
-		if needsFree {
-			coTaskMemFree(actualFormatPtr)
+	if err := initializeWASAPISharedClient(audioClient, selected.formatPtr, streamFlags); err != nil {
+		if selected.needsFree {
+			coTaskMemFree(selected.formatPtr)
+		}
+		if ignoredClosestDetail != "" {
+			err = fmt.Errorf("%w (requested=%s closest=%s ignored)", err, describeWaveFormat(requestedFormatPtr), ignoredClosestDetail)
 		}
 		return wasapiNegotiatedFormat{}, err
 	}
 	return wasapiNegotiatedFormat{
-		formatPtr: actualFormatPtr,
+		formatPtr: selected.formatPtr,
 		input:     input,
 		output:    outputFormatFromInput(input),
-		needsFree: needsFree,
+		needsFree: selected.needsFree,
 	}, nil
 }
 
@@ -581,24 +596,35 @@ func releaseWASAPINegotiatedFormat(format wasapiNegotiatedFormat) {
 	}
 }
 
-func audioClientNegotiateSharedFormat(audioClient uintptr, requestedFormatPtr uintptr) (uintptr, bool, error) {
+func audioClientNegotiateSharedFormat(audioClient uintptr, requestedFormatPtr uintptr, useClosestMatch bool) (wasapiSelectedFormat, error) {
 	closestPtr, hr, err := audioClientIsFormatSupported(audioClient, requestedFormatPtr)
 	if err != nil {
-		return 0, false, err
+		return wasapiSelectedFormat{}, err
 	}
+	selected, err := selectWASAPISharedFormat(requestedFormatPtr, closestPtr, hr, useClosestMatch)
+	if err != nil && closestPtr != 0 {
+		coTaskMemFree(closestPtr)
+	}
+	return selected, err
+}
+
+func selectWASAPISharedFormat(requestedFormatPtr uintptr, closestPtr uintptr, hr uintptr, useClosestMatch bool) (wasapiSelectedFormat, error) {
 	switch hr {
 	case 0:
-		return requestedFormatPtr, false, nil
+		return wasapiSelectedFormat{formatPtr: requestedFormatPtr}, nil
 	case hresultSFalse:
+		if !useClosestMatch {
+			return wasapiSelectedFormat{
+				formatPtr:         requestedFormatPtr,
+				ignoredClosestPtr: closestPtr,
+			}, nil
+		}
 		if closestPtr == 0 {
-			return 0, false, fmt.Errorf("IAudioClient::IsFormatSupported returned closest-match without format")
+			return wasapiSelectedFormat{}, fmt.Errorf("IAudioClient::IsFormatSupported returned closest-match without format")
 		}
-		return closestPtr, true, nil
+		return wasapiSelectedFormat{formatPtr: closestPtr, needsFree: true}, nil
 	default:
-		if closestPtr != 0 {
-			coTaskMemFree(closestPtr)
-		}
-		return 0, false, fmt.Errorf("IAudioClient::IsFormatSupported: unexpected HRESULT 0x%X", uint32(hr))
+		return wasapiSelectedFormat{}, fmt.Errorf("IAudioClient::IsFormatSupported: unexpected HRESULT 0x%X", uint32(hr))
 	}
 }
 
@@ -614,6 +640,14 @@ func initializeWASAPISharedClient(audioClient uintptr, formatPtr uintptr, stream
 	}
 	return fmt.Errorf("%w (fmt=0x%X ch=%d rate=%d bits=%d durations=%s)",
 		firstErr, base.FormatTag, base.Channels, base.SamplesPerSec, base.BitsPerSample, describeWASAPIInitAttempts())
+}
+
+func describeWaveFormat(formatPtr uintptr) string {
+	if formatPtr == 0 {
+		return "(none)"
+	}
+	base := (*waveFormatEx)(unsafe.Pointer(formatPtr))
+	return fmt.Sprintf("fmt=0x%X ch=%d rate=%d bits=%d", base.FormatTag, base.Channels, base.SamplesPerSec, base.BitsPerSample)
 }
 
 func describeWASAPIInitAttempts() string {

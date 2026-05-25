@@ -80,12 +80,105 @@ func TestWASAPIInitAttemptsRetriesZeroThenOneSecond(t *testing.T) {
 	}
 }
 
+func TestSelectWASAPISharedFormatKeepsRequestedWhenClosestIgnored(t *testing.T) {
+	const requested = uintptr(0x1000)
+	const closest = uintptr(0x2000)
+
+	got, err := selectWASAPISharedFormat(requested, closest, hresultSFalse, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.formatPtr != requested {
+		t.Fatalf("formatPtr = 0x%X, want requested 0x%X", got.formatPtr, requested)
+	}
+	if got.needsFree {
+		t.Fatal("needsFree = true, want false for requested stack format")
+	}
+	if got.ignoredClosestPtr != closest {
+		t.Fatalf("ignoredClosestPtr = 0x%X, want 0x%X", got.ignoredClosestPtr, closest)
+	}
+}
+
+func TestSelectWASAPISharedFormatUsesClosestWhenAllowed(t *testing.T) {
+	const requested = uintptr(0x1000)
+	const closest = uintptr(0x2000)
+
+	got, err := selectWASAPISharedFormat(requested, closest, hresultSFalse, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.formatPtr != closest {
+		t.Fatalf("formatPtr = 0x%X, want closest 0x%X", got.formatPtr, closest)
+	}
+	if !got.needsFree {
+		t.Fatal("needsFree = false, want true for COM closest-match format")
+	}
+	if got.ignoredClosestPtr != 0 {
+		t.Fatalf("ignoredClosestPtr = 0x%X, want 0", got.ignoredClosestPtr)
+	}
+}
+
+func TestSelectWASAPISharedFormatKeepsRequestedOnExactSupport(t *testing.T) {
+	const requested = uintptr(0x1000)
+
+	got, err := selectWASAPISharedFormat(requested, 0, 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.formatPtr != requested {
+		t.Fatalf("formatPtr = 0x%X, want requested 0x%X", got.formatPtr, requested)
+	}
+	if got.needsFree || got.ignoredClosestPtr != 0 {
+		t.Fatalf("unexpected selection metadata: %#v", got)
+	}
+}
+
 func TestWASAPIErrorSuggestsEndpointReset(t *testing.T) {
 	if !wasapiErrorSuggestsEndpointReset(staticErr("IAudioClient::Initialize: 0x80070057")) {
 		t.Fatal("expected reset hint for E_INVALIDARG")
 	}
 	if wasapiErrorSuggestsEndpointReset(staticErr("IAudioClient::IsFormatSupported: 0x88890008")) {
 		t.Fatal("did not expect reset hint for non-initialize failure")
+	}
+}
+
+func TestPCMOutputCanUseRequestedFormatWhenClosestIgnored(t *testing.T) {
+	requested := waveFormatEx{
+		FormatTag:      waveFormatPCM,
+		Channels:       2,
+		SamplesPerSec:  44100,
+		BitsPerSample:  16,
+		BlockAlign:     4,
+		AvgBytesPerSec: 176400,
+	}
+	closest := waveFormatEx{
+		FormatTag:      waveFormatExtensibleTag,
+		Channels:       1,
+		SamplesPerSec:  48000,
+		BitsPerSample:  32,
+		BlockAlign:     4,
+		AvgBytesPerSec: 192000,
+	}
+
+	selected, err := selectWASAPISharedFormat(
+		uintptr(unsafe.Pointer(&requested)),
+		uintptr(unsafe.Pointer(&closest)),
+		hresultSFalse,
+		false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := parseWASAPIInputFormat(selected.formatPtr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := outputFormatFromInput(input)
+	if output.SamplesPerSec != 44100 || output.Channels != 1 || output.BitsPerSample != 16 {
+		t.Fatalf("output = %#v, want mono 44100Hz/16-bit from requested PCM", output)
+	}
+	if selected.ignoredClosestPtr != uintptr(unsafe.Pointer(&closest)) {
+		t.Fatalf("closest was not marked ignored: %#v", selected)
 	}
 }
 

@@ -1,11 +1,14 @@
-# Build artifacts
+# Build output
 /dictation
 /dictation.exe
-audio.test.exe
-setup
+/audio.test.exe
+/setup
+build/
 *.exe
 *.dll
 *.bin
+*.a
+*.so
 
 # Go build cache
 .gocache/
@@ -22,8 +25,14 @@ staging/
 # Third-party vendored source (present on build host separately)
 third_party/
 
+# Toolchains (large cross-compilers, installed separately on build host)
+toolchains/
+
 # Go test cache
 *.test
+
+# System / container runtime dirs
+.xdg-runtime/
 
 # OS
 .DS_Store

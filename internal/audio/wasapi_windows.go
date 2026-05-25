@@ -299,34 +299,39 @@ func openWASAPIAudioClientAutoConvert(enumerator uintptr, endpoint DeviceInfo) (
 	}
 	defer releaseCOM(device)
 
-	audioClient, err := mmDeviceActivateAudioClient(device)
-	if err != nil {
-		return 0, 0, wasapiInputFormat{}, waveFormatEx{}, err
-	}
-
 	type formatSpec struct {
-		rate uint32
-		bits uint16
+		channels uint16
+		rate     uint32
+		bits     uint16
 	}
 	formats := []formatSpec{
-		{48000, 16},
-		{44100, 16},
-		{16000, 16},
-		{8000, 16},
+		{2, 48000, 16},
+		{2, 44100, 16},
+		{1, 48000, 16},
+		{1, 44100, 16},
+		{1, 16000, 16},
+		{2, 16000, 16},
 	}
 
 	var lastErr error
 	for _, spec := range formats {
+		audioClient, err := mmDeviceActivateAudioClient(device)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
 		wfx := waveFormatEx{
 			FormatTag:      waveFormatPCM,
-			Channels:       1,
+			Channels:       spec.channels,
 			SamplesPerSec:  spec.rate,
 			BitsPerSample:  spec.bits,
-			BlockAlign:     uint16(spec.bits / 8),
-			AvgBytesPerSec: spec.rate * uint32(spec.bits/8),
+			BlockAlign:     spec.channels * (spec.bits / 8),
+			AvgBytesPerSec: spec.rate * uint32(spec.channels) * uint32(spec.bits/8),
 		}
 		flags := uintptr(audclntStreamFlagsAutoConvertPCM | audclntStreamFlagsSrcDefaultQuality)
 		if err := audioClientInitializeShared(audioClient, uintptr(unsafe.Pointer(&wfx)), 0, flags); err != nil {
+			releaseCOM(audioClient)
 			lastErr = err
 			continue
 		}
@@ -334,11 +339,12 @@ func openWASAPIAudioClientAutoConvert(enumerator uintptr, endpoint DeviceInfo) (
 		captureClient, err := audioClientGetCaptureClient(audioClient)
 		if err != nil {
 			releaseCOM(audioClient)
-			return 0, 0, wasapiInputFormat{}, waveFormatEx{}, err
+			lastErr = err
+			continue
 		}
 
 		input := wasapiInputFormat{
-			channels:      1,
+			channels:      spec.channels,
 			samplesPerSec: spec.rate,
 			bitsPerSample: spec.bits,
 			validBits:     spec.bits,
@@ -346,7 +352,6 @@ func openWASAPIAudioClientAutoConvert(enumerator uintptr, endpoint DeviceInfo) (
 		return audioClient, captureClient, input, wfx, nil
 	}
 
-	releaseCOM(audioClient)
 	if lastErr != nil {
 		return 0, 0, wasapiInputFormat{}, waveFormatEx{}, lastErr
 	}

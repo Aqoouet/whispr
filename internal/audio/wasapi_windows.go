@@ -45,7 +45,7 @@ const (
 	propertyStoreGetValue = 5
 
 	audioClientInitializeMethod        = 3
-	audioClientIsFormatSupportedMethod = 5
+	audioClientIsFormatSupportedMethod = 7
 	audioClientGetMixFormatMethod      = 8
 	audioClientStartMethod             = 10
 	audioClientStopMethod              = 11

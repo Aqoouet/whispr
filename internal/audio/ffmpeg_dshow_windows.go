@@ -16,7 +16,11 @@ import (
 	"time"
 )
 
-const ffmpegShutdownTimeout = 3 * time.Second
+const (
+	ffmpegShutdownTimeout    = 3 * time.Second
+	ffmpegMaxCaptureAttempts = 3
+	ffmpegRetryDelay         = 600 * time.Millisecond
+)
 
 var execCommand = exec.Command
 
@@ -73,26 +77,59 @@ func (r *Recorder) startFFmpegDShow() ([]openAttempt, error) {
 		}}, err
 	}
 
-	devices, enumErr := listFFmpegDShowAudioDevices(ffmpegPath)
-	if enumErr != nil {
-		attempt := openAttempt{
-			Backend: captureBackendFFmpegDShow,
-			Detail:  fmt.Sprintf("device-list path=%s", displayDeviceName(ffmpegPath)),
-			Failure: fmt.Sprintf("directshow device enumeration failed: %v", enumErr),
+	var allAttempts []openAttempt
+
+	for i := 0; i < ffmpegMaxCaptureAttempts; i++ {
+		if i > 0 {
+			time.Sleep(ffmpegRetryDelay)
 		}
-		return []openAttempt{attempt}, enumErr
+
+		devices, enumErr := listFFmpegDShowAudioDevices(ffmpegPath)
+		if enumErr != nil {
+			attempt := openAttempt{
+				Backend: captureBackendFFmpegDShow,
+				Detail:  fmt.Sprintf("device-list path=%s", displayDeviceName(ffmpegPath)),
+				Failure: fmt.Sprintf("directshow device enumeration failed: %v", enumErr),
+			}
+			return append(allAttempts, attempt), enumErr
+		}
+
+		dev, resolutionDetail, resolveErr := resolveFFmpegDShowDevice(devices, r.options)
+		if resolveErr != nil {
+			attempt := openAttempt{
+				Backend: captureBackendFFmpegDShow,
+				Detail:  "device-resolution",
+				Failure: resolveErr.Error(),
+			}
+			return append(allAttempts, attempt), resolveErr
+		}
+
+		session, attempt, launchErr := launchFFmpegCapture(ffmpegPath, source, resolutionDetail, dev)
+		if launchErr == nil {
+			r.ffmpeg = session
+			r.mode = recorderModeFFmpegDShow
+			r.activeDetail = fmt.Sprintf("backend=%s detail=%s", captureBackendFFmpegDShow, session.stopDetail)
+			r.format = waveFormatEx{
+				FormatTag:      waveFormatPCM,
+				Channels:       ffmpegCaptureChannels,
+				SamplesPerSec:  ffmpegCaptureSampleRate,
+				BitsPerSample:  ffmpegCaptureBits,
+				BlockAlign:     ffmpegCaptureChannels * (ffmpegCaptureBits / 8),
+				AvgBytesPerSec: ffmpegCaptureSampleRate * uint32(ffmpegCaptureChannels) * uint32(ffmpegCaptureBits/8),
+			}
+			return nil, nil
+		}
+
+		allAttempts = append(allAttempts, attempt)
+		if !isExclusiveDeviceError(launchErr) {
+			return allAttempts, launchErr
+		}
 	}
 
-	dev, resolutionDetail, err := resolveFFmpegDShowDevice(devices, r.options)
-	if err != nil {
-		attempt := openAttempt{
-			Backend: captureBackendFFmpegDShow,
-			Detail:  "device-resolution",
-			Failure: err.Error(),
-		}
-		return []openAttempt{attempt}, err
-	}
+	return allAttempts, fmt.Errorf("directshow: audio device held exclusively after %d attempts", ffmpegMaxCaptureAttempts)
+}
 
+func launchFFmpegCapture(ffmpegPath, source, resolutionDetail string, dev dshowAudioDevice) (*ffmpegSession, openAttempt, error) {
 	outputPath := filepath.Join(os.TempDir(), fmt.Sprintf("corpdictation-%d.wav", time.Now().UnixNano()))
 	args := []string{
 		"-hide_banner",
@@ -116,7 +153,7 @@ func (r *Recorder) startFFmpegDShow() ([]openAttempt, error) {
 			Detail:  fmt.Sprintf("%s cmd=%s", resolutionDetail, command),
 			Failure: fmt.Sprintf("directshow launch failed: stdin pipe: %v", err),
 		}
-		return []openAttempt{attempt}, err
+		return nil, attempt, err
 	}
 	if err := cmd.Start(); err != nil {
 		attempt := openAttempt{
@@ -124,7 +161,7 @@ func (r *Recorder) startFFmpegDShow() ([]openAttempt, error) {
 			Detail:  fmt.Sprintf("%s cmd=%s", resolutionDetail, command),
 			Failure: fmt.Sprintf("directshow launch failed: %v; stderr=%s", err, summarizeFFmpegStderr(stderr.String())),
 		}
-		return []openAttempt{attempt}, err
+		return nil, attempt, err
 	}
 
 	session := &ffmpegSession{
@@ -151,26 +188,25 @@ func (r *Recorder) startFFmpegDShow() ([]openAttempt, error) {
 		cleanupFFmpegSession(session)
 		msg := fmt.Sprintf("directshow capture exited immediately: %s%s; stderr=%s",
 			waitErrString(waitErr), hint, stderrSummary)
-		return []openAttempt{{
+		attempt := openAttempt{
 			Backend: captureBackendFFmpegDShow,
 			Detail:  stopDetail,
 			Failure: msg,
-		}}, fmt.Errorf("%s", msg)
+		}
+		return nil, attempt, fmt.Errorf("%s", msg)
 	default:
 	}
 
-	r.ffmpeg = session
-	r.mode = recorderModeFFmpegDShow
-	r.activeDetail = fmt.Sprintf("backend=%s detail=%s", captureBackendFFmpegDShow, session.stopDetail)
-	r.format = waveFormatEx{
-		FormatTag:      waveFormatPCM,
-		Channels:       ffmpegCaptureChannels,
-		SamplesPerSec:  ffmpegCaptureSampleRate,
-		BitsPerSample:  ffmpegCaptureBits,
-		BlockAlign:     ffmpegCaptureChannels * (ffmpegCaptureBits / 8),
-		AvgBytesPerSec: ffmpegCaptureSampleRate * uint32(ffmpegCaptureChannels) * uint32(ffmpegCaptureBits/8),
+	return session, openAttempt{}, nil
+}
+
+func isExclusiveDeviceError(err error) bool {
+	if err == nil {
+		return false
 	}
-	return nil, nil
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "device may be in exclusive use") ||
+		strings.Contains(lower, "could not run graph")
 }
 
 func (r *Recorder) ffmpegStop() (string, error) {

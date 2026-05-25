@@ -147,8 +147,12 @@ func openFailureRecoveryHint(attempts []openAttempt) string {
 			return "bundled ffmpeg.exe is missing from runtime\\ffmpeg.exe; stage it there or install ffmpeg on PATH"
 		case strings.Contains(lowerFailure, "directshow device not found"):
 			return "configured microphone name did not match any ffmpeg DirectShow audio device; verify the saved device name against ffmpeg -list_devices output"
+		case strings.Contains(lowerFailure, "device may be in exclusive use"),
+			strings.Contains(lowerFailure, "could not run graph"):
+			return "audio device is held exclusively by another application (Teams, Zoom, browser, etc.); close it or enable shared mode in Windows Sound settings > Recording > device > Properties > Advanced"
 		case strings.Contains(lowerFailure, "directshow launch failed"),
 			strings.Contains(lowerFailure, "directshow capture exited early"),
+			strings.Contains(lowerFailure, "directshow capture exited immediately"),
 			strings.Contains(lowerFailure, "directshow device enumeration failed"),
 			strings.Contains(lowerFailure, "directshow capture failed"):
 			return "ffmpeg DirectShow capture failed; inspect the stderr summary in the attempt log and verify Windows microphone permissions"

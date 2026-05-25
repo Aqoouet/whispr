@@ -83,7 +83,7 @@ func (r *Recorder) startFFmpegDShow() ([]openAttempt, error) {
 		return []openAttempt{attempt}, enumErr
 	}
 
-	deviceName, resolutionDetail, err := resolveFFmpegDShowDevice(devices, r.options)
+	dev, resolutionDetail, err := resolveFFmpegDShowDevice(devices, r.options)
 	if err != nil {
 		attempt := openAttempt{
 			Backend: captureBackendFFmpegDShow,
@@ -98,7 +98,7 @@ func (r *Recorder) startFFmpegDShow() ([]openAttempt, error) {
 		"-hide_banner",
 		"-y",
 		"-f", "dshow",
-		"-i", "audio=" + deviceName,
+		"-i", "audio=" + dev.FFmpegName,
 		"-ar", fmt.Sprintf("%d", ffmpegCaptureSampleRate),
 		"-ac", fmt.Sprintf("%d", ffmpegCaptureChannels),
 		"-acodec", "pcm_s16le",
@@ -138,6 +138,26 @@ func (r *Recorder) startFFmpegDShow() ([]openAttempt, error) {
 	go func() {
 		session.waitCh <- cmd.Wait()
 	}()
+
+	time.Sleep(300 * time.Millisecond)
+	select {
+	case waitErr := <-session.waitCh:
+		hint := ""
+		if strings.Contains(session.stderr.String(), "Could not run graph") {
+			hint = " (device may be in exclusive use by another application)"
+		}
+		stopDetail := session.stopDetail
+		stderrSummary := summarizeFFmpegStderr(session.stderr.String())
+		cleanupFFmpegSession(session)
+		msg := fmt.Sprintf("directshow capture exited immediately: %s%s; stderr=%s",
+			waitErrString(waitErr), hint, stderrSummary)
+		return []openAttempt{{
+			Backend: captureBackendFFmpegDShow,
+			Detail:  stopDetail,
+			Failure: msg,
+		}}, fmt.Errorf("%s", msg)
+	default:
+	}
 
 	r.ffmpeg = session
 	r.mode = recorderModeFFmpegDShow
@@ -275,7 +295,7 @@ func wellKnownFFmpegCandidates() []string {
 	return candidates
 }
 
-func listFFmpegDShowAudioDevices(ffmpegPath string) ([]string, error) {
+func listFFmpegDShowAudioDevices(ffmpegPath string) ([]dshowAudioDevice, error) {
 	cmd := execCommand(ffmpegPath, "-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	stderr := &limitedBuffer{max: 8192}

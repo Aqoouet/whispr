@@ -23,8 +23,11 @@ func TestParseFFmpegDShowAudioDevices(t *testing.T) {
 		t.Fatalf("devices=%v want=%v", got, want)
 	}
 	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("devices[%d]=%q want %q", i, got[i], want[i])
+		if got[i].Name != want[i] {
+			t.Fatalf("devices[%d].Name=%q want %q", i, got[i].Name, want[i])
+		}
+		if got[i].FFmpegName != want[i] {
+			t.Fatalf("devices[%d].FFmpegName=%q want %q (old format should equal Name)", i, got[i].FFmpegName, want[i])
 		}
 	}
 }
@@ -52,22 +55,48 @@ func TestParseFFmpegDShowAudioDevicesNewFormat(t *testing.T) {
 		t.Fatalf("devices=%v want=%v", got, want)
 	}
 	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("devices[%d]=%q want %q", i, got[i], want[i])
+		if got[i].Name != want[i] {
+			t.Fatalf("devices[%d].Name=%q want %q", i, got[i].Name, want[i])
 		}
 	}
 }
 
+func TestParseFFmpegDShowAudioDevicesUsesAltNameForNonASCII(t *testing.T) {
+	altName := `@device_cm_{33D9A762-90C8-11D0-BD43-00A0C911CE86}\wave_{12345678-1234-1234-1234-123456789abc}`
+	output := strings.Join([]string{
+		`[dshow @ 000001] DirectShow audio devices`,
+		`[dshow @ 000001]  "ASCII Device"`,
+		`[dshow @ 000001]     Alternative name "@device_cm_{...}\wave_{ascii}"`,
+		`[dshow @ 000001]  "Микрофон (2- Jabra EVOLVE 20)"`,
+		`[dshow @ 000001]     Alternative name "` + altName + `"`,
+	}, "\n")
+
+	got := parseFFmpegDShowAudioDevices(output)
+	if len(got) != 2 {
+		t.Fatalf("want 2 devices, got %d: %v", len(got), got)
+	}
+	if got[0].FFmpegName != got[0].Name {
+		t.Fatalf("ASCII device: FFmpegName=%q want Name=%q", got[0].FFmpegName, got[0].Name)
+	}
+	if got[1].Name != "Микрофон (2- Jabra EVOLVE 20)" {
+		t.Fatalf("Name=%q", got[1].Name)
+	}
+	if got[1].FFmpegName != altName {
+		t.Fatalf("non-ASCII device: FFmpegName=%q want %q", got[1].FFmpegName, altName)
+	}
+}
+
 func TestResolveFFmpegDShowDevicePrefersNormalizedExactMatch(t *testing.T) {
-	device, detail, err := resolveFFmpegDShowDevice([]string{
-		"Microphone (SteelSeries Sonar)",
-		"Arctis Pro Wireless Chat",
-	}, Options{PreferredInputDevice: "  arctis   pro wireless chat "})
+	devices := []dshowAudioDevice{
+		{Name: "Microphone (SteelSeries Sonar)", FFmpegName: "Microphone (SteelSeries Sonar)"},
+		{Name: "Arctis Pro Wireless Chat", FFmpegName: "Arctis Pro Wireless Chat"},
+	}
+	dev, detail, err := resolveFFmpegDShowDevice(devices, Options{PreferredInputDevice: "  arctis   pro wireless chat "})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if device != "Arctis Pro Wireless Chat" {
-		t.Fatalf("device=%q", device)
+	if dev.Name != "Arctis Pro Wireless Chat" {
+		t.Fatalf("device=%q", dev.Name)
 	}
 	if !strings.Contains(detail, `resolved="Arctis Pro Wireless Chat"`) {
 		t.Fatalf("detail=%q", detail)
@@ -75,20 +104,24 @@ func TestResolveFFmpegDShowDevicePrefersNormalizedExactMatch(t *testing.T) {
 }
 
 func TestResolveFFmpegDShowDeviceAllowsUniqueSubstringMatch(t *testing.T) {
-	device, _, err := resolveFFmpegDShowDevice([]string{
-		"Microphone Array (Intel)",
-		"Microphone (Arctis Pro Wireless Chat)",
-	}, Options{PreferredInputDevice: "Arctis Pro Wireless Chat"})
+	devices := []dshowAudioDevice{
+		{Name: "Microphone Array (Intel)", FFmpegName: "Microphone Array (Intel)"},
+		{Name: "Microphone (Arctis Pro Wireless Chat)", FFmpegName: "Microphone (Arctis Pro Wireless Chat)"},
+	}
+	dev, _, err := resolveFFmpegDShowDevice(devices, Options{PreferredInputDevice: "Arctis Pro Wireless Chat"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if device != "Microphone (Arctis Pro Wireless Chat)" {
-		t.Fatalf("device=%q", device)
+	if dev.Name != "Microphone (Arctis Pro Wireless Chat)" {
+		t.Fatalf("device=%q", dev.Name)
 	}
 }
 
 func TestResolveFFmpegDShowDeviceRejectsMissingConfiguredDevice(t *testing.T) {
-	_, _, err := resolveFFmpegDShowDevice([]string{"Microphone (USB Audio Device)"}, Options{
+	devices := []dshowAudioDevice{
+		{Name: "Microphone (USB Audio Device)", FFmpegName: "Microphone (USB Audio Device)"},
+	}
+	_, _, err := resolveFFmpegDShowDevice(devices, Options{
 		PreferredInputDevice: "Arctis Pro Wireless Chat",
 	})
 	if err == nil {
@@ -100,17 +133,18 @@ func TestResolveFFmpegDShowDeviceRejectsMissingConfiguredDevice(t *testing.T) {
 }
 
 func TestResolveFFmpegDShowDeviceFallsBackToConfiguredFallback(t *testing.T) {
-	device, _, err := resolveFFmpegDShowDevice([]string{
-		"Microphone (USB Audio Device)",
-		"Microphone (HP USB Media Audio)",
-	}, Options{
+	devices := []dshowAudioDevice{
+		{Name: "Microphone (USB Audio Device)", FFmpegName: "Microphone (USB Audio Device)"},
+		{Name: "Microphone (HP USB Media Audio)", FFmpegName: "Microphone (HP USB Media Audio)"},
+	}
+	dev, _, err := resolveFFmpegDShowDevice(devices, Options{
 		PreferredInputDevice: "Missing Mic",
 		FallbackInputDevice:  "HP USB Media Audio",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if device != "Microphone (HP USB Media Audio)" {
-		t.Fatalf("device=%q", device)
+	if dev.Name != "Microphone (HP USB Media Audio)" {
+		t.Fatalf("device=%q", dev.Name)
 	}
 }

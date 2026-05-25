@@ -1,0 +1,30 @@
+# Build artifacts
+/dictation
+/dictation.exe
+audio.test.exe
+setup
+*.exe
+*.dll
+*.bin
+
+# Go build cache
+.gocache/
+
+# Local tool state
+.claude/
+.omc/
+.codex/
+.agents/
+
+# Runtime staging (large binaries / models)
+staging/
+
+# Third-party vendored source (present on build host separately)
+third_party/
+
+# Go test cache
+*.test
+
+# OS
+.DS_Store
+Thumbs.db

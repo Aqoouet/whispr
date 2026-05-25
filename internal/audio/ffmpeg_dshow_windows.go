@@ -222,14 +222,22 @@ func findFFmpegExecutable(explicitPath, runtimeDir string) (string, string, erro
 		}
 	}
 
-	// 2. Well-known Program Files installations — policy-safe, checked before AppData bundled.
+	// 2. Alongside the running executable — policy-safe, user-managed placement.
+	if exePath, err := os.Executable(); err == nil {
+		adjacent := filepath.Join(filepath.Dir(exePath), "ffmpeg.exe")
+		if info, err := os.Stat(adjacent); err == nil && !info.IsDir() {
+			return adjacent, "adjacent", nil
+		}
+	}
+
+	// 3. Well-known Program Files installations — policy-safe, checked before AppData bundled.
 	for _, candidate := range wellKnownFFmpegCandidates() {
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 			return candidate, "well-known", nil
 		}
 	}
 
-	// 3. Bundled runtime\ffmpeg.exe — may be blocked by group policy on some machines.
+	// 4. Bundled runtime\ffmpeg.exe — may be blocked by group policy on some machines.
 	if runtimeDir != "" {
 		bundled := filepath.Join(runtimeDir, "ffmpeg.exe")
 		if info, err := os.Stat(bundled); err == nil && !info.IsDir() {
@@ -237,7 +245,7 @@ func findFFmpegExecutable(explicitPath, runtimeDir string) (string, string, erro
 		}
 	}
 
-	// 4. PATH.
+	// 5. PATH.
 	if path, err := exec.LookPath("ffmpeg.exe"); err == nil {
 		return path, "PATH", nil
 	}
@@ -245,7 +253,7 @@ func findFFmpegExecutable(explicitPath, runtimeDir string) (string, string, erro
 		return path, "PATH", nil
 	}
 
-	return "", "", fmt.Errorf("ffmpeg.exe not found: checked config path %q, Program Files candidates, bundled %s, and PATH",
+	return "", "", fmt.Errorf("ffmpeg.exe not found: checked config path %q, adjacent to exe, Program Files candidates, bundled %s, and PATH",
 		explicitPath, filepath.Join(runtimeDir, "ffmpeg.exe"))
 }
 

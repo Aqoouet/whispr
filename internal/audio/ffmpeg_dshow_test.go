@@ -29,6 +29,35 @@ func TestParseFFmpegDShowAudioDevices(t *testing.T) {
 	}
 }
 
+func TestParseFFmpegDShowAudioDevicesNewFormat(t *testing.T) {
+	// New ffmpeg format: section headers, no "(audio)" tag per device line.
+	output := strings.Join([]string{
+		`[dshow @ 000001] DirectShow video devices`,
+		`[dshow @ 000001]  "Integrated Camera"`,
+		`[dshow @ 000001]     Alternative name "@device_pnp_..."`,
+		`[dshow @ 000001] DirectShow audio devices`,
+		`[dshow @ 000001]  "Microphone (Arctis Pro Wireless Chat)"`,
+		`[dshow @ 000001]     Alternative name "@device_cm_{...}\wave_{...}"`,
+		`[dshow @ 000001]  "Микрофон (2- Jabra EVOLVE 20)"`,
+		`[dshow @ 000001]     Alternative name "@device_cm_{...}\wave_{...}"`,
+		`dummy: Immediate exit requested`,
+	}, "\n")
+
+	got := parseFFmpegDShowAudioDevices(output)
+	want := []string{
+		"Microphone (Arctis Pro Wireless Chat)",
+		"Микрофон (2- Jabra EVOLVE 20)",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("devices=%v want=%v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("devices[%d]=%q want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestResolveFFmpegDShowDevicePrefersNormalizedExactMatch(t *testing.T) {
 	device, detail, err := resolveFFmpegDShowDevice([]string{
 		"Microphone (SteelSeries Sonar)",

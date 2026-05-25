@@ -15,18 +15,38 @@ func parseFFmpegDShowAudioDevices(output string) []string {
 	lines := strings.Split(output, "\n")
 	devices := make([]string, 0, len(lines))
 	seen := make(map[string]bool, len(lines))
+	inAudioSection := false
 	for _, line := range lines {
-		if !strings.Contains(line, "(audio)") {
+		// New format: section headers delimit audio vs video devices.
+		if strings.Contains(line, "DirectShow audio devices") {
+			inAudioSection = true
 			continue
 		}
-		device, ok := parseQuotedDeviceName(line)
-		if !ok {
+		if strings.Contains(line, "DirectShow video devices") {
+			inAudioSection = false
 			continue
 		}
-		key := normalizeFFmpegDeviceName(device)
-		if !seen[key] {
-			devices = append(devices, device)
-			seen[key] = true
+		// Old format: "(audio)" tag on device line.
+		if strings.Contains(line, "(audio)") {
+			inAudioSection = false
+			if device, ok := parseQuotedDeviceName(line); ok {
+				key := normalizeFFmpegDeviceName(device)
+				if !seen[key] {
+					devices = append(devices, device)
+					seen[key] = true
+				}
+			}
+			continue
+		}
+		// New format: device name lines inside audio section (skip "Alternative name").
+		if inAudioSection && !strings.Contains(line, "Alternative name") {
+			if device, ok := parseQuotedDeviceName(line); ok {
+				key := normalizeFFmpegDeviceName(device)
+				if !seen[key] {
+					devices = append(devices, device)
+					seen[key] = true
+				}
+			}
 		}
 	}
 	return devices

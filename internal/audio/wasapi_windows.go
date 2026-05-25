@@ -41,11 +41,15 @@ const (
 
 	propertyStoreGetValue = 5
 
-	audioClientInitializeMethod = 3
-	audioClientGetMixFormatMethod = 8
-	audioClientStartMethod = 10
-	audioClientStopMethod = 11
-	audioClientGetServiceMethod = 14
+	audioClientInitializeMethod        = 3
+	audioClientIsFormatSupportedMethod = 7
+	audioClientGetMixFormatMethod      = 8
+	audioClientGetDevicePeriodMethod   = 9
+	audioClientStartMethod             = 10
+	audioClientStopMethod              = 11
+	audioClientGetServiceMethod        = 14
+
+	hresultSFalse = uintptr(1)
 
 	captureClientGetBufferMethod = 3
 	captureClientReleaseBufferMethod = 4
@@ -261,18 +265,44 @@ func openWASAPIAudioClient(enumerator uintptr, endpoint DeviceInfo) (uintptr, ui
 		releaseCOM(audioClient)
 		return 0, 0, wasapiInputFormat{}, waveFormatEx{}, err
 	}
-	input, err := parseWASAPIInputFormat(formatPtr)
+
+	// Use driver's closest match if mix format isn't accepted as-is.
+	activeFormatPtr := formatPtr
+	closestPtr, err := audioClientIsFormatSupported(audioClient, formatPtr)
 	if err != nil {
 		coTaskMemFree(formatPtr)
 		releaseCOM(audioClient)
 		return 0, 0, wasapiInputFormat{}, waveFormatEx{}, err
 	}
-	if err := audioClientInitializeShared(audioClient, formatPtr); err != nil {
+	if closestPtr != 0 {
 		coTaskMemFree(formatPtr)
+		activeFormatPtr = closestPtr
+	}
+
+	input, err := parseWASAPIInputFormat(activeFormatPtr)
+	if err != nil {
+		coTaskMemFree(activeFormatPtr)
 		releaseCOM(audioClient)
 		return 0, 0, wasapiInputFormat{}, waveFormatEx{}, err
 	}
-	coTaskMemFree(formatPtr)
+
+	period, err := audioClientGetDevicePeriod(audioClient)
+	if err != nil {
+		coTaskMemFree(activeFormatPtr)
+		releaseCOM(audioClient)
+		return 0, 0, wasapiInputFormat{}, waveFormatEx{}, err
+	}
+
+	if err := audioClientInitializeShared(audioClient, activeFormatPtr, period); err != nil {
+		base := (*waveFormatEx)(unsafe.Pointer(activeFormatPtr))
+		initErr := fmt.Errorf("%w (fmt=0x%X ch=%d rate=%d bits=%d)",
+			err, base.FormatTag, base.Channels, base.SamplesPerSec, base.BitsPerSample)
+		coTaskMemFree(activeFormatPtr)
+		releaseCOM(audioClient)
+		return 0, 0, wasapiInputFormat{}, waveFormatEx{}, initErr
+	}
+	coTaskMemFree(activeFormatPtr)
+
 	captureClient, err := audioClientGetCaptureClient(audioClient)
 	if err != nil {
 		releaseCOM(audioClient)
@@ -727,14 +757,14 @@ func audioClientGetMixFormat(audioClient uintptr) (uintptr, error) {
 	return formatPtr, nil
 }
 
-func audioClientInitializeShared(audioClient uintptr, formatPtr uintptr) error {
+func audioClientInitializeShared(audioClient uintptr, formatPtr uintptr, hnsBufferDuration int64) error {
 	hr, _, _ := syscall.Syscall9(
 		comVtbl(audioClient, audioClientInitializeMethod),
 		7,
 		audioClient,
 		audclntShareModeShared,
 		0,
-		0,
+		uintptr(hnsBufferDuration),
 		0,
 		formatPtr,
 		0,
@@ -745,6 +775,45 @@ func audioClientInitializeShared(audioClient uintptr, formatPtr uintptr) error {
 		return hresultError("IAudioClient::Initialize", hr)
 	}
 	return nil
+}
+
+func audioClientGetDevicePeriod(audioClient uintptr) (int64, error) {
+	var defaultPeriod int64
+	hr, _, _ := syscall.Syscall(
+		comVtbl(audioClient, audioClientGetDevicePeriodMethod),
+		3,
+		audioClient,
+		uintptr(unsafe.Pointer(&defaultPeriod)),
+		0,
+	)
+	if hr != 0 {
+		return 0, hresultError("IAudioClient::GetDevicePeriod", hr)
+	}
+	return defaultPeriod, nil
+}
+
+func audioClientIsFormatSupported(audioClient uintptr, formatPtr uintptr) (uintptr, error) {
+	var closestMatch uintptr
+	hr, _, _ := syscall.Syscall6(
+		comVtbl(audioClient, audioClientIsFormatSupportedMethod),
+		4,
+		audioClient,
+		audclntShareModeShared,
+		formatPtr,
+		uintptr(unsafe.Pointer(&closestMatch)),
+		0,
+		0,
+	)
+	if hr == hresultSFalse {
+		return closestMatch, nil
+	}
+	if closestMatch != 0 {
+		coTaskMemFree(closestMatch)
+	}
+	if hr != 0 {
+		return 0, hresultError("IAudioClient::IsFormatSupported", hr)
+	}
+	return 0, nil
 }
 
 func audioClientGetCaptureClient(audioClient uintptr) (uintptr, error) {

@@ -65,17 +65,11 @@ func Run(ctx context.Context, opts Options) error {
 		RuntimeDir:           validation.Paths.RuntimeDir,
 	}
 	if opts.InputPath == "" {
-		inputDevices, enumErr := audio.EnumerateInputDevices()
+		ffmpegDevices, enumErr := audio.EnumerateFFmpegDevices(audioOptions.RuntimeDir)
 		if enumErr != nil {
 			logger.Printf("capture device enumeration failed: %v", enumErr)
 		} else {
-			logger.Printf("capture devices: %s", audio.DescribeInputDevices(inputDevices))
-		}
-		wasapiDevices, wasapiErr := audio.EnumerateWASAPIInputDevices()
-		if wasapiErr != nil {
-			logger.Printf("capture endpoints failed: %v", wasapiErr)
-		} else {
-			logger.Printf("capture endpoints: %s", audio.DescribeInputDevices(wasapiDevices))
+			logger.Printf("capture devices: %s", audio.DescribeInputDevices(ffmpegDevices))
 		}
 		logger.Printf("capture selection: %s", audio.DescribeInputSelection(audioOptions))
 	}

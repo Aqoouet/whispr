@@ -108,6 +108,19 @@ func TestBuildWinMMOpenPlanOrder(t *testing.T) {
 	}
 }
 
+func TestPreferredWindowsCaptureBackendsPrefersFFmpegDShowFirst(t *testing.T) {
+	got := preferredWindowsCaptureBackends()
+	if len(got) == 0 {
+		t.Fatal("no backends")
+	}
+	if got[0] != captureBackendFFmpegDShow {
+		t.Fatalf("first backend=%q", got[0])
+	}
+	if got[1] != captureBackendWASAPI {
+		t.Fatalf("second backend=%q", got[1])
+	}
+}
+
 func TestOpenFailureIncludesRecoveryHint(t *testing.T) {
 	err := newOpenFailure("Jabra EVOLVE 20", 1, []openAttempt{
 		{Backend: captureBackendWinMMMapper, Detail: "16000Hz/1ch/16bit mapper", Failure: "INVALPARAM", EndpointReset: true},
@@ -143,5 +156,15 @@ func TestOpenFailureIncludesRecoveryHintForWASAPIInvalidArg(t *testing.T) {
 		if !strings.Contains(got, part) {
 			t.Fatalf("error %q missing %q", got, part)
 		}
+	}
+}
+
+func TestOpenFailureIncludesFFmpegSpecificRecoveryHint(t *testing.T) {
+	err := newOpenFailure("Arctis Pro Wireless Chat", 1, []openAttempt{
+		{Backend: captureBackendFFmpegDShow, Detail: "binary", Failure: `bundled ffmpeg.exe missing at "C:\\runtime\\ffmpeg.exe" and ffmpeg.exe not found on PATH`},
+		{Backend: captureBackendWASAPI, Detail: `target="Arctis Pro Wireless Chat" mixformat`, Failure: "IAudioClient::Initialize: 0x80070057"},
+	})
+	if !strings.Contains(err.Error(), `bundled ffmpeg.exe is missing from runtime\ffmpeg.exe`) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

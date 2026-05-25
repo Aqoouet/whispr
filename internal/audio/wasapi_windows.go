@@ -178,6 +178,7 @@ func (r *Recorder) startWASAPI() ([]openAttempt, error) {
 	r.mode = recorderModeWASAPI
 	r.format = result.format
 	r.wasapiDevice = result.device
+	r.activeDetail = fmt.Sprintf("backend=%s device=%s", captureBackendWASAPI, displayDeviceName(result.device))
 	return nil, nil
 }
 

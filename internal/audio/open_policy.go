@@ -11,6 +11,7 @@ const (
 	waveMapper     = 0xFFFFFFFF
 	waveFormDirect = 0x0008
 
+	captureBackendFFmpegDShow = "ffmpeg-dshow"
 	captureBackendWASAPI      = "wasapi"
 	captureBackendWinMMMapper = "winmm-mapper"
 	captureBackendWinMMDevice = "winmm-device"
@@ -20,6 +21,7 @@ const (
 type Options struct {
 	PreferredInputDevice string
 	FallbackInputDevice  string
+	RuntimeDir           string
 }
 
 type DeviceInfo struct {
@@ -118,7 +120,17 @@ func DescribeInputDevices(devices []DeviceInfo) string {
 }
 
 func DescribeInputSelection(options Options) string {
-	return fmt.Sprintf("preferred_input_device=%q fallback_input_device=%q", options.PreferredInputDevice, options.FallbackInputDevice)
+	return fmt.Sprintf("preferred_input_device=%q fallback_input_device=%q runtime_dir=%q", options.PreferredInputDevice, options.FallbackInputDevice, options.RuntimeDir)
+}
+
+func preferredWindowsCaptureBackends() []string {
+	return []string{
+		captureBackendFFmpegDShow,
+		captureBackendWASAPI,
+		captureBackendWinMMDevice,
+		captureBackendWinMMMapper,
+		captureBackendDSound,
+	}
 }
 
 // inputDeviceRank orders capture devices: Game-style headset inputs before Chat/aux paths.
@@ -270,5 +282,35 @@ func (e *openFailure) Error() string {
 	if suggestReset {
 		msg += "; microphone endpoint is present but failed to initialize; unplug/replug the USB headset, then restart Windows audio or reboot if needed"
 	}
+	if hint := openFailureRecoveryHint(e.Attempts); hint != "" {
+		msg += "; " + hint
+	}
 	return msg
+}
+
+func openFailureRecoveryHint(attempts []openAttempt) string {
+	hasNativeFailure := false
+	for _, attempt := range attempts {
+		if attempt.Backend != captureBackendFFmpegDShow {
+			hasNativeFailure = true
+			continue
+		}
+		lowerFailure := strings.ToLower(attempt.Failure)
+		switch {
+		case strings.Contains(lowerFailure, "bundled ffmpeg.exe missing"),
+			strings.Contains(lowerFailure, "ffmpeg.exe not found"):
+			return "bundled ffmpeg.exe is missing from runtime\\ffmpeg.exe; stage it there or install ffmpeg on PATH"
+		case strings.Contains(lowerFailure, "directshow device not found"):
+			return "configured microphone name did not match any ffmpeg DirectShow audio device; verify the saved device name against ffmpeg -list_devices output"
+		case strings.Contains(lowerFailure, "directshow launch failed"),
+			strings.Contains(lowerFailure, "directshow capture exited early"),
+			strings.Contains(lowerFailure, "directshow device enumeration failed"),
+			strings.Contains(lowerFailure, "directshow capture failed"):
+			return "ffmpeg DirectShow capture failed; inspect the stderr summary in the attempt log and verify Windows microphone permissions"
+		}
+	}
+	if hasNativeFailure {
+		return "native Windows capture backends also failed after ffmpeg DirectShow fallback"
+	}
+	return ""
 }

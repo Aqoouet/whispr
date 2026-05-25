@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -38,9 +39,10 @@ const (
 	dsBufferStopMethod         = 10
 	dsBufferUnlockMethod       = 11
 
-	recorderModeWASAPI = "wasapi"
-	recorderModeWinMM  = "winmm"
-	recorderModeDSound = "dsound"
+	recorderModeFFmpegDShow = "ffmpeg-dshow"
+	recorderModeWASAPI      = "wasapi"
+	recorderModeWinMM       = "winmm"
+	recorderModeDSound      = "dsound"
 )
 
 type waveDevCaps struct {
@@ -110,6 +112,8 @@ type Recorder struct {
 	wasapiStopCh chan struct{}
 	wasapiDoneCh chan wasapiCaptureResult
 	wasapiDevice string
+	activeDetail string
+	ffmpeg       *ffmpegSession
 	active       bool
 }
 
@@ -138,7 +142,7 @@ func (r *Recorder) Start() error {
 	if err := r.tryOpen(0, nil); err != nil {
 		return err
 	}
-	if r.mode == recorderModeWASAPI || r.mode == recorderModeDSound {
+	if r.mode == recorderModeFFmpegDShow || r.mode == recorderModeWASAPI || r.mode == recorderModeDSound {
 		r.active = true
 		return nil
 	}
@@ -168,6 +172,13 @@ func (r *Recorder) Stop() (string, error) {
 	var stopErr error
 
 	switch r.mode {
+	case recorderModeFFmpegDShow:
+		path, err := r.ffmpegStop()
+		r.active = false
+		if err != nil {
+			return "", fmt.Errorf("ffmpeg-dshow stop: %w", err)
+		}
+		return path, nil
 	case recorderModeWASAPI:
 		recorded, stopErr = r.wasapiStop()
 		if stopErr != nil {
@@ -234,12 +245,23 @@ func (r *Recorder) Close() error {
 	if r.active {
 		_, _ = r.Stop()
 	}
+	if r.ffmpeg != nil {
+		cleanupFFmpegSession(r.ffmpeg)
+		r.ffmpeg = nil
+	}
 	r.dsoundReleaseInterfaces()
 	return nil
 }
 
 func EnsureWAVPath(path string) (string, error) {
 	return path, nil
+}
+
+func (r *Recorder) ActiveBackendDescription() string {
+	if strings.TrimSpace(r.activeDetail) == "" {
+		return "backend=(unknown)"
+	}
+	return r.activeDetail
 }
 
 func writeWAV(path string, pcm []byte, format waveFormatEx) error {
@@ -322,6 +344,16 @@ func mmCodeSuggestsEndpointReset(code uintptr) bool {
 func (r *Recorder) tryOpen(attempt int, prior []openAttempt) error {
 	attempts := append([]openAttempt(nil), prior...)
 
+	if ffmpegAttempts, err := r.startFFmpegDShow(); err == nil {
+		return nil
+	} else {
+		attempts = append(attempts, ffmpegAttempts...)
+		if r.ffmpeg != nil {
+			cleanupFFmpegSession(r.ffmpeg)
+			r.ffmpeg = nil
+		}
+	}
+
 	if wasapiAttempts, err := r.startWASAPI(); err == nil {
 		return nil
 	} else {
@@ -360,6 +392,7 @@ func (r *Recorder) tryOpen(attempt int, prior []openAttempt) error {
 		code, _ := r.waveInOpenUsing(spec.DeviceID, spec.Flags)
 		if code == mmNoError {
 			r.mode = recorderModeWinMM
+			r.activeDetail = fmt.Sprintf("backend=%s detail=%s", spec.Backend, spec.Detail)
 			return nil
 		}
 		attempts = append(attempts, openAttempt{Backend: spec.Backend, Detail: spec.Detail, Failure: mmErrString(code), EndpointReset: mmCodeSuggestsEndpointReset(code)})
@@ -374,6 +407,7 @@ func (r *Recorder) tryOpen(attempt int, prior []openAttempt) error {
 			if err := r.dsoundProbe(); err == nil {
 				if err := r.dsoundTryOpen(); err == nil {
 					r.mode = recorderModeDSound
+					r.activeDetail = fmt.Sprintf("backend=%s detail=%s", captureBackendDSound, fmt.Sprintf("%s target=%s", formatDetail(fc), displayDeviceName(device.Name)))
 					if err := r.dsoundStart(); err == nil {
 						return nil
 					}
@@ -587,6 +621,8 @@ func (r *Recorder) resetState() {
 	r.wasapiStopCh = nil
 	r.wasapiDoneCh = nil
 	r.wasapiDevice = ""
+	r.activeDetail = ""
+	r.ffmpeg = nil
 	r.active = false
 }
 

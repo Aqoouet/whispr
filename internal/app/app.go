@@ -62,6 +62,7 @@ func Run(ctx context.Context, opts Options) error {
 	audioOptions := audio.Options{
 		PreferredInputDevice: cfg.PreferredInputDevice,
 		FallbackInputDevice:  cfg.FallbackInputDevice,
+		RuntimeDir:           validation.Paths.RuntimeDir,
 	}
 	if opts.InputPath == "" {
 		inputDevices, enumErr := audio.EnumerateInputDevices()

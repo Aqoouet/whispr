@@ -58,6 +58,7 @@ func runWindowsLoop(ctx context.Context, logger *log.Logger, backend whisper.Bac
 				}
 				recording = true
 				ui.SetStatus("Recording")
+				logger.Printf("recording started: %s", recorder.ActiveBackendDescription())
 				continue
 			}
 

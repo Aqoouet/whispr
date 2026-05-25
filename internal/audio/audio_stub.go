@@ -33,6 +33,10 @@ func (r *Recorder) Close() error {
 	return nil
 }
 
+func (r *Recorder) ActiveBackendDescription() string {
+	return "backend=unsupported"
+}
+
 func EnsureWAVPath(path string) (string, error) {
 	if _, err := os.Stat(path); err != nil {
 		return "", err

@@ -35,6 +35,7 @@
 
 - Build output on the Windows side is read from `R:\whispr\build\dictation.exe`.
 - Approved launch/deploy location is `T:\whispr\dictation.exe`.
+- **Commit/push/deploy rule:** When asked to commit, push, or deploy for `whispr`, spawn a separate `haiku` agent (cheapest model) to handle that work. Do NOT perform commit/push/deploy inline; always delegate that lane to the haiku agent.
 - Standard Windows deploy step:
   1. Build on `stressii-wg`.
      Build command: `GOOS=windows GOARCH=amd64 go build -o build/dictation.exe ./cmd/dictation`
@@ -49,3 +50,4 @@
   2. Pull the tail of `app.log`.
   3. Confirm the latest `startup build=...` line matches the expected build.
   4. Read the next `record start failed` or success lines from the same tail.
+- **Log error analysis rule:** When asked to read and summarize recent errors from `app.log`, spawn a separate `haiku` agent (cheapest model) to fetch the log tail and return a concise error summary. Do NOT read logs inline; always delegate to the haiku agent.

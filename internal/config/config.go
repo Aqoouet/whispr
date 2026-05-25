@@ -21,6 +21,9 @@ type Config struct {
 	SaveAudio            bool   `json:"save_audio"`
 	LogTranscripts       bool   `json:"log_transcripts"`
 	BeamSize             int    `json:"beam_size"`
+	// FFmpegPath overrides bundled ffmpeg.exe. Use when group policy blocks
+	// execution from AppData\Local — point to a Program Files installation.
+	FFmpegPath string `json:"ffmpeg_path,omitempty"`
 }
 
 func Default() Config {

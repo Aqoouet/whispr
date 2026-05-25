@@ -35,8 +35,8 @@ func NewRecorder(options Options) (*Recorder, error) {
 	return &Recorder{options: options}, nil
 }
 
-func EnumerateFFmpegDevices(runtimeDir string) ([]DeviceInfo, error) {
-	ffmpegPath, _, err := findFFmpegExecutable(runtimeDir)
+func EnumerateFFmpegDevices(options Options) ([]DeviceInfo, error) {
+	ffmpegPath, _, err := findFFmpegExecutable(options.FFmpegPath, options.RuntimeDir)
 	if err != nil {
 		return nil, fmt.Errorf("ffmpeg not found: %w", err)
 	}

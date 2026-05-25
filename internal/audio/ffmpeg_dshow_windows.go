@@ -64,7 +64,7 @@ func (b *limitedBuffer) String() string {
 }
 
 func (r *Recorder) startFFmpegDShow() ([]openAttempt, error) {
-	ffmpegPath, source, err := findFFmpegExecutable(r.options.RuntimeDir)
+	ffmpegPath, source, err := findFFmpegExecutable(r.options.FFmpegPath, r.options.RuntimeDir)
 	if err != nil {
 		return []openAttempt{{
 			Backend: captureBackendFFmpegDShow,
@@ -214,20 +214,57 @@ func cleanupFFmpegSession(session *ffmpegSession) {
 	}
 }
 
-func findFFmpegExecutable(runtimeDir string) (string, string, error) {
+func findFFmpegExecutable(explicitPath, runtimeDir string) (string, string, error) {
+	// 1. Explicit config override — highest priority, policy-safe path chosen by user.
+	if explicitPath != "" {
+		if info, err := os.Stat(explicitPath); err == nil && !info.IsDir() {
+			return explicitPath, "config", nil
+		}
+	}
+
+	// 2. Well-known Program Files installations — policy-safe, checked before AppData bundled.
+	for _, candidate := range wellKnownFFmpegCandidates() {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate, "well-known", nil
+		}
+	}
+
+	// 3. Bundled runtime\ffmpeg.exe — may be blocked by group policy on some machines.
 	if runtimeDir != "" {
 		bundled := filepath.Join(runtimeDir, "ffmpeg.exe")
 		if info, err := os.Stat(bundled); err == nil && !info.IsDir() {
 			return bundled, "bundled", nil
 		}
 	}
+
+	// 4. PATH.
 	if path, err := exec.LookPath("ffmpeg.exe"); err == nil {
 		return path, "PATH", nil
 	}
 	if path, err := exec.LookPath("ffmpeg"); err == nil {
 		return path, "PATH", nil
 	}
-	return "", "", fmt.Errorf("bundled ffmpeg.exe missing at %s and ffmpeg.exe not found on PATH", filepath.Join(runtimeDir, "ffmpeg.exe"))
+
+	return "", "", fmt.Errorf("ffmpeg.exe not found: checked config path %q, Program Files candidates, bundled %s, and PATH",
+		explicitPath, filepath.Join(runtimeDir, "ffmpeg.exe"))
+}
+
+// wellKnownFFmpegCandidates returns ffmpeg.exe paths from Program Files locations
+// that are not subject to AppData execution policy restrictions.
+func wellKnownFFmpegCandidates() []string {
+	var candidates []string
+	for _, envVar := range []string{"PROGRAMFILES", "PROGRAMW6432", "PROGRAMFILES(X86)"} {
+		dir := os.Getenv(envVar)
+		if dir == "" {
+			continue
+		}
+		// Standard ffmpeg install layout.
+		candidates = append(candidates, filepath.Join(dir, "ffmpeg", "bin", "ffmpeg.exe"))
+		// Altair HyperWorks bundles ffmpeg; glob across version directories.
+		matches, _ := filepath.Glob(filepath.Join(dir, "Altair", "*", "hwdesktop", "hw", "bin", "win64", "ffmpeg.exe"))
+		candidates = append(candidates, matches...)
+	}
+	return candidates
 }
 
 func listFFmpegDShowAudioDevices(ffmpegPath string) ([]string, error) {

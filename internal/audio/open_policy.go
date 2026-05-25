@@ -15,6 +15,9 @@ type Options struct {
 	PreferredInputDevice string
 	FallbackInputDevice  string
 	RuntimeDir           string
+	// FFmpegPath overrides automatic ffmpeg discovery. Takes priority over
+	// bundled runtime\ffmpeg.exe and well-known Program Files candidates.
+	FFmpegPath string
 }
 
 type DeviceInfo struct {

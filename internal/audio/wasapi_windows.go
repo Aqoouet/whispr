@@ -180,7 +180,7 @@ func (r *Recorder) runWASAPIWorker(stopCh <-chan struct{}, initCh chan<- wasapiS
 	}
 	defer releaseCOM(enumerator)
 
-	endpoints, defaultID, err := wasapiListEndpoints(enumerator)
+	endpoints, _, err := wasapiListEndpoints(enumerator)
 	if err != nil {
 		initCh <- wasapiStartResult{attempts: []openAttempt{{Backend: captureBackendWASAPI, Detail: "enumeration", Failure: err.Error()}}, startErr: err}
 		return
@@ -197,7 +197,7 @@ func (r *Recorder) runWASAPIWorker(stopCh <-chan struct{}, initCh chan<- wasapiS
 		return
 	}
 
-	ordered := orderWASAPIEndpoints(selection, endpoints, defaultID)
+	ordered := orderWASAPIEndpoints(selection)
 	attempts := make([]openAttempt, 0, len(ordered))
 	for _, endpoint := range ordered {
 		audioClient, captureClient, input, output, openAttempts, err := tryOpenWASAPIEndpoint(enumerator, endpoint)
@@ -221,33 +221,6 @@ func (r *Recorder) runWASAPIWorker(stopCh <-chan struct{}, initCh chan<- wasapiS
 	}
 
 	initCh <- wasapiStartResult{attempts: attempts, startErr: fmt.Errorf("WASAPI capture initialization failed")}
-}
-
-func orderWASAPIEndpoints(selection deviceSelection, endpoints []DeviceInfo, defaultID string) []DeviceInfo {
-	used := make(map[string]bool, len(endpoints))
-	ordered := make([]DeviceInfo, 0, len(endpoints))
-	appendUnique := func(device DeviceInfo) {
-		key := deviceIdentityKey(device)
-		if !used[key] {
-			ordered = append(ordered, device)
-			used[key] = true
-		}
-	}
-	for _, device := range selection.targets {
-		appendUnique(device)
-	}
-	if defaultID != "" {
-		for _, device := range endpoints {
-			if strings.EqualFold(device.EndpointID, defaultID) {
-				appendUnique(device)
-				break
-			}
-		}
-	}
-	for _, device := range selection.remaining {
-		appendUnique(device)
-	}
-	return ordered
 }
 
 func tryOpenWASAPIEndpoint(enumerator uintptr, endpoint DeviceInfo) (uintptr, uintptr, wasapiInputFormat, waveFormatEx, []openAttempt, error) {

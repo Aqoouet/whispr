@@ -48,6 +48,46 @@ func TestResolveInputDeviceSelectionRejectsUnknownConfiguredDevice(t *testing.T)
 	}
 }
 
+func TestReorderInputDevicesPreferGame(t *testing.T) {
+	devices := []DeviceInfo{
+		{ID: 1, Name: "Arctis Pro Wireless Chat"},
+		{ID: 2, Name: "HP USB Media Audio"},
+		{ID: 3, Name: "Arctis Pro Wireless Game"},
+	}
+	got := reorderInputDevicesPreferGame(devices)
+	want := []string{
+		"Arctis Pro Wireless Game",
+		"HP USB Media Audio",
+		"Arctis Pro Wireless Chat",
+	}
+	for i, name := range want {
+		if got[i].Name != name {
+			t.Fatalf("device[%d] = %q, want %q", i, got[i].Name, name)
+		}
+	}
+}
+
+func TestOrderWASAPIEndpointsPrefersGameOverChatDefault(t *testing.T) {
+	endpoints := []DeviceInfo{
+		{ID: 0, Name: "Arctis Pro Wireless Chat", EndpointID: "chat-endpoint"},
+		{ID: 1, Name: "Arctis Pro Wireless Game", EndpointID: "game-endpoint"},
+	}
+	selection, err := resolveInputDeviceSelection(endpoints, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordered := orderWASAPIEndpoints(selection)
+	if len(ordered) != 2 {
+		t.Fatalf("ordered = %d devices, want 2", len(ordered))
+	}
+	if ordered[0].Name != "Arctis Pro Wireless Game" {
+		t.Fatalf("first endpoint = %q, want Game", ordered[0].Name)
+	}
+	if ordered[1].Name != "Arctis Pro Wireless Chat" {
+		t.Fatalf("second endpoint = %q, want Chat", ordered[1].Name)
+	}
+}
+
 func TestBuildWinMMOpenPlanOrder(t *testing.T) {
 	selection := deviceSelection{
 		targets:   []DeviceInfo{{ID: 2, Name: "Arctis Pro Wireless Chat"}},

@@ -2,6 +2,7 @@ package audio
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -120,7 +121,32 @@ func DescribeInputSelection(options Options) string {
 	return fmt.Sprintf("preferred_input_device=%q fallback_input_device=%q", options.PreferredInputDevice, options.FallbackInputDevice)
 }
 
+// inputDeviceRank orders capture devices: Game-style headset inputs before Chat/aux paths.
+func inputDeviceRank(name string) int {
+	n := strings.ToLower(name)
+	switch {
+	case strings.Contains(n, "chat"):
+		return 2
+	case strings.Contains(n, "game"):
+		return 0
+	default:
+		return 1
+	}
+}
+
+func reorderInputDevicesPreferGame(devices []DeviceInfo) []DeviceInfo {
+	if len(devices) <= 1 {
+		return devices
+	}
+	out := append([]DeviceInfo(nil), devices...)
+	sort.SliceStable(out, func(i, j int) bool {
+		return inputDeviceRank(out[i].Name) < inputDeviceRank(out[j].Name)
+	})
+	return out
+}
+
 func resolveInputDeviceSelection(devices []DeviceInfo, options Options) (deviceSelection, error) {
+	devices = reorderInputDevicesPreferGame(devices)
 	used := make(map[string]bool, len(devices))
 	targets := make([]DeviceInfo, 0, 2)
 
@@ -151,6 +177,26 @@ func resolveInputDeviceSelection(devices []DeviceInfo, options Options) (deviceS
 	}
 
 	return deviceSelection{targets: targets, remaining: remaining}, nil
+}
+
+func orderWASAPIEndpoints(selection deviceSelection) []DeviceInfo {
+	used := make(map[string]bool, len(selection.targets)+len(selection.remaining))
+	ordered := make([]DeviceInfo, 0, len(selection.targets)+len(selection.remaining))
+	appendUnique := func(device DeviceInfo) {
+		key := deviceIdentityKey(device)
+		if !used[key] {
+			ordered = append(ordered, device)
+			used[key] = true
+		}
+	}
+	for _, device := range selection.targets {
+		appendUnique(device)
+	}
+	// remaining is already Game-before-Chat; do not bump Windows default (often Chat) ahead of Game.
+	for _, device := range selection.remaining {
+		appendUnique(device)
+	}
+	return ordered
 }
 
 func selectFailureDeviceLabel(selection deviceSelection, devices []DeviceInfo) string {

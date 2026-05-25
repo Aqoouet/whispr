@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math"
 	"runtime"
-	"strings"
 	"syscall"
 	"time"
 	"unsafe"

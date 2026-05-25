@@ -200,9 +200,9 @@ func (r *Recorder) runWASAPIWorker(stopCh <-chan struct{}, initCh chan<- wasapiS
 	ordered := orderWASAPIEndpoints(selection, endpoints, defaultID)
 	attempts := make([]openAttempt, 0, len(ordered))
 	for _, endpoint := range ordered {
-		audioClient, captureClient, input, output, err := openWASAPIAudioClientAutoConvert(enumerator, endpoint)
+		audioClient, captureClient, input, output, openAttempts, err := tryOpenWASAPIEndpoint(enumerator, endpoint)
+		attempts = append(attempts, openAttempts...)
 		if err != nil {
-			attempts = append(attempts, openAttempt{Backend: captureBackendWASAPI, Detail: fmt.Sprintf("target=%s autoconvert", displayDeviceName(endpoint.Name)), Failure: err.Error()})
 			continue
 		}
 		if err := wasapiStartClient(audioClient); err != nil {
@@ -250,7 +250,42 @@ func orderWASAPIEndpoints(selection deviceSelection, endpoints []DeviceInfo, def
 	return ordered
 }
 
+func tryOpenWASAPIEndpoint(enumerator uintptr, endpoint DeviceInfo) (uintptr, uintptr, wasapiInputFormat, waveFormatEx, []openAttempt, error) {
+	attempts := make([]openAttempt, 0, 4)
+	label := displayDeviceName(endpoint.Name)
+
+	strategies := []struct {
+		detail string
+		open   func(uintptr, DeviceInfo) (uintptr, uintptr, wasapiInputFormat, waveFormatEx, error)
+	}{
+		{detail: "mixformat", open: openWASAPIAudioClient},
+		{detail: "mixformat-autoconvert", open: openWASAPIAudioClientMixAutoConvert},
+		{detail: "pcm-autoconvert", open: openWASAPIAudioClientAutoConvert},
+	}
+	for _, strategy := range strategies {
+		audioClient, captureClient, input, output, err := strategy.open(enumerator, endpoint)
+		if err == nil {
+			return audioClient, captureClient, input, output, attempts, nil
+		}
+		attempts = append(attempts, openAttempt{
+			Backend: captureBackendWASAPI,
+			Detail:  fmt.Sprintf("target=%s %s", label, strategy.detail),
+			Failure: err.Error(),
+		})
+	}
+	return 0, 0, wasapiInputFormat{}, waveFormatEx{}, attempts, fmt.Errorf("WASAPI capture initialization failed")
+}
+
 func openWASAPIAudioClient(enumerator uintptr, endpoint DeviceInfo) (uintptr, uintptr, wasapiInputFormat, waveFormatEx, error) {
+	return openWASAPIAudioClientWithMixFormat(enumerator, endpoint, 0)
+}
+
+func openWASAPIAudioClientMixAutoConvert(enumerator uintptr, endpoint DeviceInfo) (uintptr, uintptr, wasapiInputFormat, waveFormatEx, error) {
+	flags := uintptr(audclntStreamFlagsAutoConvertPCM | audclntStreamFlagsSrcDefaultQuality)
+	return openWASAPIAudioClientWithMixFormat(enumerator, endpoint, flags)
+}
+
+func openWASAPIAudioClientWithMixFormat(enumerator uintptr, endpoint DeviceInfo, streamFlags uintptr) (uintptr, uintptr, wasapiInputFormat, waveFormatEx, error) {
 	device, err := mmDeviceByID(enumerator, endpoint.EndpointID)
 	if err != nil {
 		return 0, 0, wasapiInputFormat{}, waveFormatEx{}, err
@@ -274,7 +309,7 @@ func openWASAPIAudioClient(enumerator uintptr, endpoint DeviceInfo) (uintptr, ui
 		return 0, 0, wasapiInputFormat{}, waveFormatEx{}, err
 	}
 
-	if err := audioClientInitializeShared(audioClient, formatPtr, 0, 0); err != nil {
+	if err := audioClientInitializeShared(audioClient, formatPtr, 0, streamFlags); err != nil {
 		base := (*waveFormatEx)(unsafe.Pointer(formatPtr))
 		initErr := fmt.Errorf("%w (fmt=0x%X ch=%d rate=%d bits=%d)",
 			err, base.FormatTag, base.Channels, base.SamplesPerSec, base.BitsPerSample)
@@ -805,17 +840,14 @@ func audioClientGetMixFormat(audioClient uintptr) (uintptr, error) {
 }
 
 func audioClientInitializeShared(audioClient uintptr, formatPtr uintptr, hnsBufferDuration int64, streamFlags uintptr) error {
-	hr, _, _ := syscall.Syscall9(
+	hr, _, _ := syscall.SyscallN(
 		comVtbl(audioClient, audioClientInitializeMethod),
-		7,
 		audioClient,
-		audclntShareModeShared,
+		uintptr(audclntShareModeShared),
 		streamFlags,
 		uintptr(hnsBufferDuration),
 		0,
 		formatPtr,
-		0,
-		0,
 		0,
 	)
 	if hr != 0 {

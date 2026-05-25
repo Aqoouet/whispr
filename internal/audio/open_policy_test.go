@@ -128,3 +128,20 @@ func TestOpenFailureIncludesRecoveryHint(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenFailureIncludesRecoveryHintForWASAPIInvalidArg(t *testing.T) {
+	err := newOpenFailure("Arctis Pro Wireless Chat", 1, []openAttempt{
+		{Backend: captureBackendWASAPI, Detail: `target="Arctis Pro Wireless Chat" mixformat`, Failure: "IAudioClient::Initialize: 0x80070057", EndpointReset: true},
+	})
+
+	got := err.Error()
+	wantParts := []string{
+		`wasapi[target="Arctis Pro Wireless Chat" mixformat]=IAudioClient::Initialize: 0x80070057`,
+		`unplug/replug the USB headset`,
+	}
+	for _, part := range wantParts {
+		if !strings.Contains(got, part) {
+			t.Fatalf("error %q missing %q", got, part)
+		}
+	}
+}

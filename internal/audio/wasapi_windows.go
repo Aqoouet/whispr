@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -44,15 +45,16 @@ const (
 	propertyStoreGetValue = 5
 
 	audioClientInitializeMethod        = 3
-	audioClientGetMixFormatMethod = 8
+	audioClientIsFormatSupportedMethod = 5
+	audioClientGetMixFormatMethod      = 8
 	audioClientStartMethod             = 10
 	audioClientStopMethod              = 11
 	audioClientGetServiceMethod        = 14
 
 	hresultSFalse = uintptr(1)
 
-	captureClientGetBufferMethod = 3
-	captureClientReleaseBufferMethod = 4
+	captureClientGetBufferMethod         = 3
+	captureClientReleaseBufferMethod     = 4
 	captureClientGetNextPacketSizeMethod = 5
 )
 
@@ -100,6 +102,17 @@ type wasapiStartResult struct {
 	startErr error
 }
 
+type wasapiInitAttempt struct {
+	duration int64
+}
+
+type wasapiNegotiatedFormat struct {
+	formatPtr uintptr
+	input     wasapiInputFormat
+	output    waveFormatEx
+	needsFree bool
+}
+
 type wasapiCaptureResult struct {
 	data []byte
 	err  error
@@ -115,12 +128,12 @@ var (
 )
 
 var (
-	clsidMMDeviceEnumerator = guid{0xBCDE0395, 0xE52F, 0x467C, [8]byte{0x8E, 0x3D, 0xC4, 0x57, 0x92, 0x91, 0x69, 0x2E}}
-	iidIMMDeviceEnumerator  = guid{0xA95664D2, 0x9614, 0x4F35, [8]byte{0xA7, 0x46, 0xDE, 0x8D, 0xB6, 0x36, 0x17, 0xE6}}
-	iidIAudioClient         = guid{0x1CB9AD4C, 0xDBFA, 0x4C32, [8]byte{0xB1, 0x78, 0xC2, 0xF5, 0x68, 0xA7, 0x03, 0xB2}}
-	iidIAudioCaptureClient  = guid{0xC8ADBD64, 0xE71E, 0x48A0, [8]byte{0xA4, 0xDE, 0x18, 0x5C, 0x39, 0x5C, 0xD3, 0x17}}
-	pkeyDeviceFriendlyName  = propertyKey{Fmtid: guid{0xA45C254E, 0xDF1C, 0x4EFD, [8]byte{0x80, 0x20, 0x67, 0xD1, 0x46, 0xA8, 0x50, 0xE0}}, Pid: 14}
-	ksDataFormatSubtypePCM = guid{0x00000001, 0x0000, 0x0010, [8]byte{0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71}}
+	clsidMMDeviceEnumerator  = guid{0xBCDE0395, 0xE52F, 0x467C, [8]byte{0x8E, 0x3D, 0xC4, 0x57, 0x92, 0x91, 0x69, 0x2E}}
+	iidIMMDeviceEnumerator   = guid{0xA95664D2, 0x9614, 0x4F35, [8]byte{0xA7, 0x46, 0xDE, 0x8D, 0xB6, 0x36, 0x17, 0xE6}}
+	iidIAudioClient          = guid{0x1CB9AD4C, 0xDBFA, 0x4C32, [8]byte{0xB1, 0x78, 0xC2, 0xF5, 0x68, 0xA7, 0x03, 0xB2}}
+	iidIAudioCaptureClient   = guid{0xC8ADBD64, 0xE71E, 0x48A0, [8]byte{0xA4, 0xDE, 0x18, 0x5C, 0x39, 0x5C, 0xD3, 0x17}}
+	pkeyDeviceFriendlyName   = propertyKey{Fmtid: guid{0xA45C254E, 0xDF1C, 0x4EFD, [8]byte{0x80, 0x20, 0x67, 0xD1, 0x46, 0xA8, 0x50, 0xE0}}, Pid: 14}
+	ksDataFormatSubtypePCM   = guid{0x00000001, 0x0000, 0x0010, [8]byte{0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71}}
 	ksDataFormatSubtypeFloat = guid{0x00000003, 0x0000, 0x0010, [8]byte{0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71}}
 )
 
@@ -240,9 +253,10 @@ func tryOpenWASAPIEndpoint(enumerator uintptr, endpoint DeviceInfo) (uintptr, ui
 			return audioClient, captureClient, input, output, attempts, nil
 		}
 		attempts = append(attempts, openAttempt{
-			Backend: captureBackendWASAPI,
-			Detail:  fmt.Sprintf("target=%s %s", label, strategy.detail),
-			Failure: err.Error(),
+			Backend:       captureBackendWASAPI,
+			Detail:        fmt.Sprintf("target=%s %s", label, strategy.detail),
+			Failure:       err.Error(),
+			EndpointReset: wasapiErrorSuggestsEndpointReset(err),
 		})
 	}
 	return 0, 0, wasapiInputFormat{}, waveFormatEx{}, attempts, fmt.Errorf("WASAPI capture initialization failed")
@@ -274,29 +288,20 @@ func openWASAPIAudioClientWithMixFormat(enumerator uintptr, endpoint DeviceInfo,
 		return 0, 0, wasapiInputFormat{}, waveFormatEx{}, err
 	}
 
-	input, err := parseWASAPIInputFormat(formatPtr)
+	negotiated, err := negotiateWASAPISharedFormat(audioClient, formatPtr, streamFlags)
+	coTaskMemFree(formatPtr)
 	if err != nil {
-		coTaskMemFree(formatPtr)
 		releaseCOM(audioClient)
 		return 0, 0, wasapiInputFormat{}, waveFormatEx{}, err
 	}
-
-	if err := audioClientInitializeShared(audioClient, formatPtr, 0, streamFlags); err != nil {
-		base := (*waveFormatEx)(unsafe.Pointer(formatPtr))
-		initErr := fmt.Errorf("%w (fmt=0x%X ch=%d rate=%d bits=%d)",
-			err, base.FormatTag, base.Channels, base.SamplesPerSec, base.BitsPerSample)
-		coTaskMemFree(formatPtr)
-		releaseCOM(audioClient)
-		return 0, 0, wasapiInputFormat{}, waveFormatEx{}, initErr
-	}
-	coTaskMemFree(formatPtr)
+	defer releaseWASAPINegotiatedFormat(negotiated)
 
 	captureClient, err := audioClientGetCaptureClient(audioClient)
 	if err != nil {
 		releaseCOM(audioClient)
 		return 0, 0, wasapiInputFormat{}, waveFormatEx{}, err
 	}
-	return audioClient, captureClient, input, outputFormatFromInput(input), nil
+	return audioClient, captureClient, negotiated.input, negotiated.output, nil
 }
 
 func openWASAPIAudioClientAutoConvert(enumerator uintptr, endpoint DeviceInfo) (uintptr, uintptr, wasapiInputFormat, waveFormatEx, error) {
@@ -306,19 +311,7 @@ func openWASAPIAudioClientAutoConvert(enumerator uintptr, endpoint DeviceInfo) (
 	}
 	defer releaseCOM(device)
 
-	type formatSpec struct {
-		channels uint16
-		rate     uint32
-		bits     uint16
-	}
-	formats := []formatSpec{
-		{2, 48000, 16},
-		{2, 44100, 16},
-		{1, 48000, 16},
-		{1, 44100, 16},
-		{1, 16000, 16},
-		{2, 16000, 16},
-	}
+	formats := defaultWASAPIAutoConvertFormatSpecs()
 
 	var lastErr error
 	for _, spec := range formats {
@@ -337,7 +330,8 @@ func openWASAPIAudioClientAutoConvert(enumerator uintptr, endpoint DeviceInfo) (
 			AvgBytesPerSec: spec.rate * uint32(spec.channels) * uint32(spec.bits/8),
 		}
 		flags := uintptr(audclntStreamFlagsAutoConvertPCM | audclntStreamFlagsSrcDefaultQuality)
-		if err := audioClientInitializeShared(audioClient, uintptr(unsafe.Pointer(&wfx)), 0, flags); err != nil {
+		negotiated, err := negotiateWASAPISharedFormat(audioClient, uintptr(unsafe.Pointer(&wfx)), flags)
+		if err != nil {
 			releaseCOM(audioClient)
 			lastErr = err
 			continue
@@ -345,18 +339,15 @@ func openWASAPIAudioClientAutoConvert(enumerator uintptr, endpoint DeviceInfo) (
 
 		captureClient, err := audioClientGetCaptureClient(audioClient)
 		if err != nil {
+			releaseWASAPINegotiatedFormat(negotiated)
 			releaseCOM(audioClient)
 			lastErr = err
 			continue
 		}
-
-		input := wasapiInputFormat{
-			channels:      spec.channels,
-			samplesPerSec: spec.rate,
-			bitsPerSample: spec.bits,
-			validBits:     spec.bits,
-		}
-		return audioClient, captureClient, input, wfx, nil
+		output := negotiated.output
+		input := negotiated.input
+		releaseWASAPINegotiatedFormat(negotiated)
+		return audioClient, captureClient, input, output, nil
 	}
 
 	if lastErr != nil {
@@ -530,6 +521,108 @@ func parseWASAPIInputFormat(formatPtr uintptr) (wasapiInputFormat, error) {
 	default:
 		return wasapiInputFormat{}, fmt.Errorf("unsupported mix format tag 0x%X", base.FormatTag)
 	}
+}
+
+func defaultWASAPIAutoConvertFormatSpecs() []struct {
+	channels uint16
+	rate     uint32
+	bits     uint16
+} {
+	return []struct {
+		channels uint16
+		rate     uint32
+		bits     uint16
+	}{
+		{2, 44100, 16},
+		{1, 44100, 16},
+		{2, 48000, 16},
+		{1, 48000, 16},
+		{1, 16000, 16},
+		{2, 16000, 16},
+	}
+}
+
+func wasapiInitAttempts() []wasapiInitAttempt {
+	return []wasapiInitAttempt{
+		{duration: 0},
+		{duration: 10_000_000},
+	}
+}
+
+func negotiateWASAPISharedFormat(audioClient uintptr, requestedFormatPtr uintptr, streamFlags uintptr) (wasapiNegotiatedFormat, error) {
+	actualFormatPtr, needsFree, err := audioClientNegotiateSharedFormat(audioClient, requestedFormatPtr)
+	if err != nil {
+		return wasapiNegotiatedFormat{}, err
+	}
+	input, err := parseWASAPIInputFormat(actualFormatPtr)
+	if err != nil {
+		if needsFree {
+			coTaskMemFree(actualFormatPtr)
+		}
+		return wasapiNegotiatedFormat{}, err
+	}
+	if err := initializeWASAPISharedClient(audioClient, actualFormatPtr, streamFlags); err != nil {
+		if needsFree {
+			coTaskMemFree(actualFormatPtr)
+		}
+		return wasapiNegotiatedFormat{}, err
+	}
+	return wasapiNegotiatedFormat{
+		formatPtr: actualFormatPtr,
+		input:     input,
+		output:    outputFormatFromInput(input),
+		needsFree: needsFree,
+	}, nil
+}
+
+func releaseWASAPINegotiatedFormat(format wasapiNegotiatedFormat) {
+	if format.needsFree {
+		coTaskMemFree(format.formatPtr)
+	}
+}
+
+func audioClientNegotiateSharedFormat(audioClient uintptr, requestedFormatPtr uintptr) (uintptr, bool, error) {
+	closestPtr, hr, err := audioClientIsFormatSupported(audioClient, requestedFormatPtr)
+	if err != nil {
+		return 0, false, err
+	}
+	switch hr {
+	case 0:
+		return requestedFormatPtr, false, nil
+	case hresultSFalse:
+		if closestPtr == 0 {
+			return 0, false, fmt.Errorf("IAudioClient::IsFormatSupported returned closest-match without format")
+		}
+		return closestPtr, true, nil
+	default:
+		if closestPtr != 0 {
+			coTaskMemFree(closestPtr)
+		}
+		return 0, false, fmt.Errorf("IAudioClient::IsFormatSupported: unexpected HRESULT 0x%X", uint32(hr))
+	}
+}
+
+func initializeWASAPISharedClient(audioClient uintptr, formatPtr uintptr, streamFlags uintptr) error {
+	base := (*waveFormatEx)(unsafe.Pointer(formatPtr))
+	var firstErr error
+	for _, attempt := range wasapiInitAttempts() {
+		if err := audioClientInitializeShared(audioClient, formatPtr, attempt.duration, streamFlags); err == nil {
+			return nil
+		} else if firstErr == nil {
+			firstErr = err
+		}
+	}
+	return fmt.Errorf("%w (fmt=0x%X ch=%d rate=%d bits=%d durations=%s)",
+		firstErr, base.FormatTag, base.Channels, base.SamplesPerSec, base.BitsPerSample, describeWASAPIInitAttempts())
+}
+
+func describeWASAPIInitAttempts() string {
+	attempts := wasapiInitAttempts()
+	parts := make([]string, 0, len(attempts))
+	for _, attempt := range attempts {
+		parts = append(parts, fmt.Sprintf("%d", attempt.duration))
+	}
+	return strings.Join(parts, ",")
 }
 
 func parseGUID(raw []byte) guid {
@@ -811,6 +904,27 @@ func audioClientGetMixFormat(audioClient uintptr) (uintptr, error) {
 	return formatPtr, nil
 }
 
+func audioClientIsFormatSupported(audioClient uintptr, formatPtr uintptr) (uintptr, uintptr, error) {
+	var closestPtr uintptr
+	hr, _, _ := syscall.Syscall6(
+		comVtbl(audioClient, audioClientIsFormatSupportedMethod),
+		4,
+		audioClient,
+		uintptr(audclntShareModeShared),
+		formatPtr,
+		uintptr(unsafe.Pointer(&closestPtr)),
+		0,
+		0,
+	)
+	if hr != 0 && hr != hresultSFalse {
+		if closestPtr != 0 {
+			coTaskMemFree(closestPtr)
+		}
+		return 0, hr, hresultError("IAudioClient::IsFormatSupported", hr)
+	}
+	return closestPtr, hr, nil
+}
+
 func audioClientInitializeShared(audioClient uintptr, formatPtr uintptr, hnsBufferDuration int64, streamFlags uintptr) error {
 	hr, _, _ := syscall.SyscallN(
 		comVtbl(audioClient, audioClientInitializeMethod),
@@ -827,7 +941,6 @@ func audioClientInitializeShared(audioClient uintptr, formatPtr uintptr, hnsBuff
 	}
 	return nil
 }
-
 
 func audioClientGetCaptureClient(audioClient uintptr) (uintptr, error) {
 	var captureClient uintptr
@@ -949,4 +1062,11 @@ func guidEqual(a, b guid) bool {
 
 func hresultError(op string, hr uintptr) error {
 	return fmt.Errorf("%s: 0x%X", op, uint32(hr))
+}
+
+func wasapiErrorSuggestsEndpointReset(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "IAudioClient::Initialize: 0x80070057")
 }

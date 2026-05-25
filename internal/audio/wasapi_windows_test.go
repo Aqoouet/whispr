@@ -42,3 +42,72 @@ func TestParseWASAPIInputFormatExtensibleFloatMono(t *testing.T) {
 func uintptrFromBytes(raw []byte) uintptr {
 	return uintptr(unsafe.Pointer(&raw[0]))
 }
+
+func TestDefaultWASAPIAutoConvertFormatSpecsPrefers44100StereoFirst(t *testing.T) {
+	got := defaultWASAPIAutoConvertFormatSpecs()
+	want := []struct {
+		channels uint16
+		rate     uint32
+		bits     uint16
+	}{
+		{2, 44100, 16},
+		{1, 44100, 16},
+		{2, 48000, 16},
+		{1, 48000, 16},
+		{1, 16000, 16},
+		{2, 16000, 16},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len(got) = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("spec[%d] = %#v, want %#v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestWASAPIInitAttemptsRetriesZeroThenOneSecond(t *testing.T) {
+	got := wasapiInitAttempts()
+	if len(got) != 2 {
+		t.Fatalf("len(got) = %d, want 2", len(got))
+	}
+	if got[0].duration != 0 {
+		t.Fatalf("first duration = %d, want 0", got[0].duration)
+	}
+	if got[1].duration != 10_000_000 {
+		t.Fatalf("second duration = %d, want 10000000", got[1].duration)
+	}
+}
+
+func TestWASAPIErrorSuggestsEndpointReset(t *testing.T) {
+	if !wasapiErrorSuggestsEndpointReset(staticErr("IAudioClient::Initialize: 0x80070057")) {
+		t.Fatal("expected reset hint for E_INVALIDARG")
+	}
+	if wasapiErrorSuggestsEndpointReset(staticErr("IAudioClient::IsFormatSupported: 0x88890008")) {
+		t.Fatal("did not expect reset hint for non-initialize failure")
+	}
+}
+
+func TestOutputFormatFromInputUsesNegotiatedFormat(t *testing.T) {
+	input := wasapiInputFormat{
+		channels:      2,
+		samplesPerSec: 44100,
+		bitsPerSample: 16,
+		validBits:     16,
+	}
+	got := outputFormatFromInput(input)
+	if got.Channels != 1 {
+		t.Fatalf("channels = %d, want 1", got.Channels)
+	}
+	if got.SamplesPerSec != 44100 {
+		t.Fatalf("rate = %d, want 44100", got.SamplesPerSec)
+	}
+	if got.BitsPerSample != 16 {
+		t.Fatalf("bits = %d, want 16", got.BitsPerSample)
+	}
+}
+
+type staticErr string
+
+func (e staticErr) Error() string { return string(e) }

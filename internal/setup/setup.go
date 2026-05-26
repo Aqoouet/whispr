@@ -58,7 +58,6 @@ func Run(root string) error {
 			{Name: "libunwind.dll", Source: "bundled from the official llvm-mingw x86_64 runtime", Target: filepath.Join("runtime", "libunwind.dll"), RequiredAtRun: true},
 			{Name: "libomp.dll", Source: "bundled from the official llvm-mingw x86_64 runtime", Target: filepath.Join("runtime", "libomp.dll"), RequiredAtRun: true},
 			{Name: "libwinpthread-1.dll", Source: "bundled from the official llvm-mingw x86_64 runtime", Target: filepath.Join("runtime", "libwinpthread-1.dll"), RequiredAtRun: true},
-			{Name: "ffmpeg.exe", Source: "copied from a Windows ffmpeg distribution", Target: filepath.Join("runtime", "ffmpeg.exe"), RequiredAtRun: true, Notes: "Preferred Windows microphone capture now uses ffmpeg -f dshow before native driver fallbacks."},
 		},
 	}
 	if err := writeJSON(filepath.Join(paths.Root, "download-manifest.json"), manifest); err != nil {
@@ -202,7 +201,6 @@ env GOCACHE="$ROOT/.gocache" go run -buildvcs=false ./cmd/setup
 "$ROOT/staging/download_models.sh"
 "$ROOT/staging/build_linux_dev_backend.sh"
 "$ROOT/staging/build_windows_runtime_cpu_podman.sh"
-"$ROOT/staging/stage_ffmpeg_runtime.sh"
 `
 	if err := os.WriteFile(filepath.Join("staging", "prepare_all.sh"), []byte(prepareAllSh), 0o755); err != nil {
 		return err
@@ -222,24 +220,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 		return err
 	}
 
-	stageFFmpegSh := `#!/usr/bin/env bash
-set -euo pipefail
-
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RUNTIME_DIR="$ROOT/staging/windows-localappdata/CorpDictation/runtime"
-SOURCE="${CORPDICTATION_FFMPEG_EXE:-}"
-
-if [ -z "$SOURCE" ]; then
-  echo "set CORPDICTATION_FFMPEG_EXE to a Windows ffmpeg.exe before staging the runtime" >&2
-  exit 1
-fi
-
-mkdir -p "$RUNTIME_DIR"
-cp "$SOURCE" "$RUNTIME_DIR/ffmpeg.exe"
-`
-	if err := os.WriteFile(filepath.Join("staging", "stage_ffmpeg_runtime.sh"), []byte(stageFFmpegSh), 0o755); err != nil {
-		return err
-	}
 	return nil
 }
 

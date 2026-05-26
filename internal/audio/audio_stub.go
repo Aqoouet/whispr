@@ -13,7 +13,7 @@ func NewRecorder(_ Options) (*Recorder, error) {
 	return &Recorder{}, nil
 }
 
-func EnumerateFFmpegDevices(_ Options) ([]DeviceInfo, error) {
+func EnumerateDevices(_ Options) ([]DeviceInfo, error) {
 	return nil, nil
 }
 

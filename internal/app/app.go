@@ -62,15 +62,13 @@ func Run(ctx context.Context, opts Options) error {
 	audioOptions := audio.Options{
 		PreferredInputDevice: cfg.PreferredInputDevice,
 		FallbackInputDevice:  cfg.FallbackInputDevice,
-		RuntimeDir:           validation.Paths.RuntimeDir,
-		FFmpegPath:           cfg.FFmpegPath,
 	}
 	if opts.InputPath == "" {
-		ffmpegDevices, enumErr := audio.EnumerateFFmpegDevices(audioOptions)
+		devices, enumErr := audio.EnumerateDevices(audioOptions)
 		if enumErr != nil {
 			logger.Printf("capture device enumeration failed: %v", enumErr)
 		} else {
-			logger.Printf("capture devices: %s", audio.DescribeInputDevices(ffmpegDevices))
+			logger.Printf("capture devices: %s", audio.DescribeInputDevices(devices))
 		}
 		logger.Printf("capture selection: %s", audio.DescribeInputSelection(audioOptions))
 	}

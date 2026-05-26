@@ -31,17 +31,36 @@
   5. Copy the resulting Windows executable to the approved Windows launch location.
 - Treat this as the default process unless the user explicitly asks for a different workflow.
 
+## Code Review Delegation Rules
+
+- After writing or modifying code, spawn an OpenAI Codex agent using model `gpt-5.4-medium` to review the changes.
+- The spawned Codex agent reviews either uncommitted changes or the last commit — whichever is relevant.
+- Invoke via `/codex:review` (uncommitted changes) or `/codex:review --commit HEAD` (last commit).
+- The current agent must never skip this review step before committing code changes.
+- Address any CRITICAL or HIGH findings before proceeding.
+
+## Low-Cost Agent Delegation Rules
+
+- Use a separate low-cost Codex subagent every time for all `whispr` commit, push, and deploy work.
+- In this repo, the default low-cost analogue to Claude `haiku` is the spark model lane, currently `gpt-5.3-codex-spark`.
+- The spawned low-cost subagent owns and executes all `whispr` commit, push, and deploy steps.
+- The current agent must never perform `whispr` commit, push, or deploy work itself, even if the steps seem trivial or already prepared.
+- Use the spawned low-cost subagent every time for deployment verification that confirms `T:\whispr\dictation.exe` matches the latest built executable.
+- The current agent must never perform that deployment verification itself.
+- Use the spawned low-cost subagent every time to read and summarize recent errors from `C:\Users\rymax1e\AppData\Local\CorpDictation\logs\app.log`.
+- The current agent must never read or summarize those recent log errors inline.
+
 ## Whispr Deploy And Logs
 
 - Build output on the Windows side is read from `R:\whispr\build\dictation.exe`.
 - Approved launch/deploy location is `T:\whispr\dictation.exe`.
-- **Commit/push/deploy rule:** When asked to commit, push, or deploy for `whispr`, spawn a separate `haiku` agent (cheapest model) to handle that work. Do NOT perform commit/push/deploy inline; always delegate that lane to the haiku agent.
 - Standard Windows deploy step:
   1. Build on `stressii-wg`.
      Build command: `GOOS=windows GOARCH=amd64 go build -o build/dictation.exe ./cmd/dictation`
   2. Ensure the new executable is visible at `R:\whispr\build\dictation.exe`.
   3. Copy `R:\whispr\build\dictation.exe` to `T:\whispr\dictation.exe`.
   4. Launch from `T:\whispr\dictation.exe`.
+  5. After every deploy, the spawned low-cost subagent verifies that `T:\whispr\dictation.exe` matches the latest built executable.
 - Runtime log path on `workpc` is `C:\Users\rymax1e\AppData\Local\CorpDictation\logs\app.log`.
 - Standard log check command on `workpc`:
   - `ssh workpc powershell -NoProfile -Command Get-Content 'C:\\Users\\rymax1e\\AppData\\Local\\CorpDictation\\logs\\app.log' -Tail 40`
@@ -50,4 +69,3 @@
   2. Pull the tail of `app.log`.
   3. Confirm the latest `startup build=...` line matches the expected build.
   4. Read the next `record start failed` or success lines from the same tail.
-- **Log error analysis rule:** When asked to read and summarize recent errors from `app.log`, spawn a separate `haiku` agent (cheapest model) to fetch the log tail and return a concise error summary. Do NOT read logs inline; always delegate to the haiku agent.

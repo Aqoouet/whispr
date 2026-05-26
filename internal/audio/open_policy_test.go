@@ -111,3 +111,44 @@ func TestResolveInputDeviceFallsBackToDefaultWhenExactMatchIsAmbiguous(t *testin
 		t.Fatalf("detail=%q", detail)
 	}
 }
+
+func TestPlanOpenTargetsRetriesSystemDefaultAfterConfiguredDevice(t *testing.T) {
+	devices := []DeviceInfo{
+		{ID: 0, Name: "Default Microphone", EndpointID: "default"},
+		{ID: 1, Name: "Arctis Pro Wireless Chat", EndpointID: "preferred"},
+	}
+
+	targets, err := planOpenTargets(devices, devices[0], Options{
+		PreferredInputDevice: "Arctis Pro Wireless Chat",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 2 {
+		t.Fatalf("targets=%d", len(targets))
+	}
+	if targets[0].Device.EndpointID != "preferred" || targets[0].IsDefault {
+		t.Fatalf("primary=%+v", targets[0])
+	}
+	if targets[1].Device.EndpointID != "default" || !targets[1].IsDefault {
+		t.Fatalf("fallback=%+v", targets[1])
+	}
+	if targets[1].Detail != "system_default_retry_after_backend_failure" {
+		t.Fatalf("detail=%q", targets[1].Detail)
+	}
+}
+
+func TestPlanOpenTargetsDoesNotDuplicateDefaultSelection(t *testing.T) {
+	defaultDevice := DeviceInfo{ID: 0, Name: "Default Microphone", EndpointID: "default"}
+
+	targets, err := planOpenTargets([]DeviceInfo{defaultDevice}, defaultDevice, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("targets=%d", len(targets))
+	}
+	if !targets[0].IsDefault {
+		t.Fatalf("target=%+v", targets[0])
+	}
+}

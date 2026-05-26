@@ -16,6 +16,7 @@ import (
 
 type Recorder struct {
 	options      Options
+	startGuard   startGuard
 	active       bool
 	stopCh       chan struct{}
 	doneCh       chan struct{}
@@ -25,7 +26,7 @@ type Recorder struct {
 }
 
 func NewRecorder(o Options) (*Recorder, error) {
-	return &Recorder{options: o}, nil
+	return &Recorder{options: o, startGuard: newStartGuard()}, nil
 }
 
 func EnumerateDevices(_ Options) ([]DeviceInfo, error) {
@@ -53,6 +54,9 @@ func (r *Recorder) Start() error {
 	if r.active {
 		return fmt.Errorf("recording already active")
 	}
+	if err := r.startGuard.beforeStart(); err != nil {
+		return err
+	}
 	r.stopCh = make(chan struct{})
 	r.doneCh = make(chan struct{})
 	startedCh := make(chan error, 1)
@@ -72,11 +76,7 @@ func (r *Recorder) Start() error {
 			return
 		}
 		defer sess.release()
-		if err := sess.audioClient.Start(); err != nil {
-			startedCh <- fmt.Errorf("audio client start: %w", err)
-			return
-		}
-		r.activeDetail = fmt.Sprintf("backend=wasapi endpoint=%q", sess.selected.Name)
+		r.activeDetail = fmt.Sprintf("backend=wasapi endpoint=%q endpoint_id=%q selection=%s", sess.selected.Name, sess.selected.EndpointID, sess.selectedDetail)
 		startedCh <- nil
 		ticker := time.NewTicker(10 * time.Millisecond)
 		defer ticker.Stop()
@@ -100,8 +100,9 @@ func (r *Recorder) Start() error {
 		}
 	}()
 	if err := <-startedCh; err != nil {
-		return err
+		return r.startGuard.recordFailure(err)
 	}
+	r.startGuard.clear()
 	r.captureErr = nil
 	r.active = true
 	return nil

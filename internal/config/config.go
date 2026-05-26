@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 type Config struct {
@@ -41,18 +42,51 @@ func Default() Config {
 	}
 }
 
-func LocalAppDataRoot() (string, error) {
-	if v := os.Getenv("LOCALAPPDATA"); v != "" {
-		return filepath.Join(v, "CorpDictation"), nil
+const runtimeRootName = "CorpDictation"
+
+type RootPolicy struct {
+	Deployment           bool
+	AllowStagingFallback bool
+	GoOS                 string
+	Getenv               func(string) string
+}
+
+func ResolveRuntimeRoot(policy RootPolicy) (string, error) {
+	goos := policy.GoOS
+	if goos == "" {
+		goos = runtime.GOOS
 	}
-	if v := os.Getenv("CORPDICTATION_ROOT"); v != "" {
+	getenv := policy.Getenv
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	if v := getenv("CORPDICTATION_ROOT"); v != "" {
 		return v, nil
 	}
-	return "", fmt.Errorf("LOCALAPPDATA or CORPDICTATION_ROOT is not set")
+	if policy.Deployment && goos == "windows" {
+		if v := configuredWindowsMachineRoot(getenv); v != "" && dirExists(v) {
+			return v, nil
+		}
+	}
+	if v := getenv("LOCALAPPDATA"); v != "" {
+		return filepath.Join(v, runtimeRootName), nil
+	}
+	if policy.AllowStagingFallback {
+		return stagingRuntimeRoot(), nil
+	}
+	return "", fmt.Errorf("runtime root is not configured (checked CORPDICTATION_ROOT, windows machine root, LOCALAPPDATA)")
+}
+
+func LocalAppDataRoot() (string, error) {
+	return ResolveRuntimeRoot(RootPolicy{Deployment: true})
 }
 
 func ConfigPath() (string, error) {
-	root, err := LocalAppDataRoot()
+	return ConfigPathForPolicy(RootPolicy{Deployment: true})
+}
+
+func ConfigPathForPolicy(policy RootPolicy) (string, error) {
+	root, err := ResolveRuntimeRoot(policy)
 	if err != nil {
 		return "", err
 	}
@@ -117,4 +151,24 @@ func Write(path string, cfg Config) error {
 		return fmt.Errorf("write config: %w", err)
 	}
 	return nil
+}
+
+func WindowsMachineRoot() string {
+	return configuredWindowsMachineRoot(os.Getenv)
+}
+
+func configuredWindowsMachineRoot(getenv func(string) string) string {
+	if v := getenv("ProgramData"); v != "" {
+		return filepath.Join(v, runtimeRootName)
+	}
+	return ""
+}
+
+func stagingRuntimeRoot() string {
+	return filepath.Join("staging", "windows-localappdata", runtimeRootName)
+}
+
+func dirExists(path string) bool {
+	stat, err := os.Stat(path)
+	return err == nil && stat.IsDir()
 }

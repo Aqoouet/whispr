@@ -12,25 +12,19 @@ import (
 )
 
 type wasapiSession struct {
-	enumerator    *wca.IMMDeviceEnumerator
-	device        *wca.IMMDevice
-	audioClient   *wca.IAudioClient
-	captureClient *wca.IAudioCaptureClient
-	selected      DeviceInfo
+	enumerator     *wca.IMMDeviceEnumerator
+	device         *wca.IMMDevice
+	audioClient    *wca.IAudioClient
+	captureClient  *wca.IAudioCaptureClient
+	selected       DeviceInfo
+	selectedDetail string
 }
 
 func (s *wasapiSession) release() {
-	if s.captureClient != nil {
-		s.captureClient.Release()
-	}
-	if s.audioClient != nil {
-		s.audioClient.Release()
-	}
-	if s.device != nil {
-		s.device.Release()
-	}
+	s.releaseActiveHandles()
 	if s.enumerator != nil {
 		s.enumerator.Release()
+		s.enumerator = nil
 	}
 }
 
@@ -53,23 +47,38 @@ func openWASAPI(options Options) (*wasapiSession, error) {
 		s.release()
 		return nil, err
 	}
-	selected, _, err := resolveInputDevice(devices, defaultDevice, options)
+	targets, err := planOpenTargets(devices, defaultDevice, options)
 	if err != nil {
 		s.release()
 		return nil, err
 	}
-	s.selected = selected
+	failures := make([]string, 0, len(targets))
+	for _, target := range targets {
+		if err := s.openTarget(target); err == nil {
+			return s, nil
+		} else {
+			failures = append(failures, err.Error())
+		}
+	}
+	s.release()
+	return nil, fmt.Errorf("capture backend wasapi failed: %s", strings.Join(failures, "; "))
+}
 
-	s.device, err = openSelectedCaptureDevice(s.enumerator, selected)
+func (s *wasapiSession) openTarget(target openTarget) error {
+	s.releaseActiveHandles()
+	s.selected = target.Device
+	s.selectedDetail = target.Detail
+
+	var err error
+	s.device, err = openSelectedCaptureDevice(s.enumerator, target.Device)
 	if err != nil {
-		s.release()
-		return nil, fmt.Errorf("open capture endpoint %q: %w", selected.Name, err)
+		return captureStageError("open_endpoint", target, err)
 	}
 	if err := s.device.Activate(
 		wca.IID_IAudioClient, wca.CLSCTX_ALL, nil, &s.audioClient,
 	); err != nil {
-		s.release()
-		return nil, fmt.Errorf("activate audio client: %w", err)
+		s.releaseActiveHandles()
+		return captureStageError("activate_audio_client", target, err)
 	}
 	wfx := &wca.WAVEFORMATEX{
 		WFormatTag:      wca.WAVE_FORMAT_PCM,
@@ -84,14 +93,37 @@ func openWASAPI(options Options) (*wasapiSession, error) {
 	if err := s.audioClient.Initialize(
 		wca.AUDCLNT_SHAREMODE_SHARED, streamFlags, bufDur, 0, wfx, nil,
 	); err != nil {
-		s.release()
-		return nil, fmt.Errorf("audio client initialize: %w", err)
+		s.releaseActiveHandles()
+		return captureStageError("initialize_audio_client", target, err)
 	}
 	if err := s.audioClient.GetService(wca.IID_IAudioCaptureClient, &s.captureClient); err != nil {
-		s.release()
-		return nil, fmt.Errorf("get capture client: %w", err)
+		s.releaseActiveHandles()
+		return captureStageError("get_capture_client", target, err)
 	}
-	return s, nil
+	if err := s.audioClient.Start(); err != nil {
+		s.releaseActiveHandles()
+		return captureStageError("start_audio_client", target, err)
+	}
+	return nil
+}
+
+func (s *wasapiSession) releaseActiveHandles() {
+	if s.captureClient != nil {
+		s.captureClient.Release()
+		s.captureClient = nil
+	}
+	if s.audioClient != nil {
+		s.audioClient.Release()
+		s.audioClient = nil
+	}
+	if s.device != nil {
+		s.device.Release()
+		s.device = nil
+	}
+}
+
+func captureStageError(stage string, target openTarget, err error) error {
+	return fmt.Errorf("stage=%s device=%q endpoint=%q selection=%s: %w", stage, target.Device.Name, target.Device.EndpointID, target.Detail, err)
 }
 
 func enumerateCaptureDevices(enumerator *wca.IMMDeviceEnumerator) ([]DeviceInfo, error) {

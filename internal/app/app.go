@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"corpdictation/internal/audio"
@@ -21,15 +22,11 @@ type Options struct {
 }
 
 func Run(ctx context.Context, opts Options) error {
-	root, err := config.LocalAppDataRoot()
-	if err != nil && opts.InputPath == "" {
-		return err
+	rootPolicy := config.RootPolicy{
+		Deployment:           opts.InputPath == "",
+		AllowStagingFallback: opts.InputPath != "" || runtime.GOOS != "windows",
 	}
-	if root == "" {
-		root = filepath.Join("staging", "windows-localappdata", "CorpDictation")
-	}
-
-	validation, err := runtimecheck.Validate(root, requireRuntimeDLLs(opts))
+	validation, err := runtimecheck.ValidateDefault(rootPolicy, requireRuntimeDLLs(opts))
 	if err != nil {
 		return err
 	}

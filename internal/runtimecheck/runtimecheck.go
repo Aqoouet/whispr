@@ -39,6 +39,14 @@ func ResolvePaths(root string) RuntimePaths {
 	}
 }
 
+func ResolveDefaultPaths(policy config.RootPolicy) (RuntimePaths, error) {
+	root, err := config.ResolveRuntimeRoot(policy)
+	if err != nil {
+		return RuntimePaths{}, err
+	}
+	return ResolvePaths(root), nil
+}
+
 func Validate(root string, requireDLLs bool) (Validation, error) {
 	paths := ResolvePaths(root)
 	for _, dir := range []string{paths.Root, paths.RuntimeDir, paths.ModelsDir, paths.ConfigDir, paths.LogsDir} {
@@ -68,6 +76,14 @@ func Validate(root string, requireDLLs bool) (Validation, error) {
 		AvailableModels: models,
 		RuntimeDLLs:     runtimeDLLs,
 	}, nil
+}
+
+func ValidateDefault(policy config.RootPolicy, requireDLLs bool) (Validation, error) {
+	paths, err := ResolveDefaultPaths(policy)
+	if err != nil {
+		return Validation{}, err
+	}
+	return Validate(paths.Root, requireDLLs)
 }
 
 func SelectModel(cfg config.Config, available map[string]string, cudaAvailable bool) (Selection, error) {

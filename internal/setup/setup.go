@@ -76,11 +76,11 @@ func Run(root string) error {
 
 func writeBootstrapScripts(root string) error {
 	syncPS1 := `$ErrorActionPreference = "Stop"
-$target = Join-Path $env:LOCALAPPDATA "CorpDictation"
+$target = if ($env:CORPDICTATION_ROOT) { $env:CORPDICTATION_ROOT } else { Join-Path $env:LOCALAPPDATA "CorpDictation" }
 $source = Join-Path $PSScriptRoot "windows-localappdata\CorpDictation"
 New-Item -ItemType Directory -Force -Path $target | Out-Null
 Copy-Item -Path (Join-Path $source "*") -Destination $target -Recurse -Force
-Write-Host "Synced CorpDictation runtime to $target"
+Write-Host "Synced CorpDictation runtime to $target (set CORPDICTATION_ROOT for machine-wide deployment targets)"
 `
 	if err := os.MkdirAll("staging", 0o755); err != nil {
 		return err

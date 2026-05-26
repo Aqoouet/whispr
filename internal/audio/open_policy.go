@@ -16,6 +16,12 @@ type DeviceInfo struct {
 	EndpointID string
 }
 
+type openTarget struct {
+	Device    DeviceInfo
+	Detail    string
+	IsDefault bool
+}
+
 func DescribeInputDevices(devices []DeviceInfo) string {
 	if len(devices) == 0 {
 		return "(none)"
@@ -55,6 +61,26 @@ func resolveInputDevice(devices []DeviceInfo, defaultDevice DeviceInfo, options 
 		return defaultDevice, "system_default", nil
 	}
 	return defaultDevice, "system_default", nil
+}
+
+func planOpenTargets(devices []DeviceInfo, defaultDevice DeviceInfo, options Options) ([]openTarget, error) {
+	selected, detail, err := resolveInputDevice(devices, defaultDevice, options)
+	if err != nil {
+		return nil, err
+	}
+	targets := []openTarget{{
+		Device:    selected,
+		Detail:    detail,
+		IsDefault: selected.EndpointID == defaultDevice.EndpointID,
+	}}
+	if selected.EndpointID != "" && selected.EndpointID != defaultDevice.EndpointID {
+		targets = append(targets, openTarget{
+			Device:    defaultDevice,
+			Detail:    "system_default_retry_after_backend_failure",
+			IsDefault: true,
+		})
+	}
+	return targets, nil
 }
 
 func findConfiguredDevice(devices []DeviceInfo, configured string) (DeviceInfo, bool, string) {

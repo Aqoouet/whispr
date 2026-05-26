@@ -9,13 +9,12 @@ Current structure:
 - `third_party/whisper_shim`: C++ DLL wrapper over `whisper.cpp`
 
 Runtime folder target:
-- `%LOCALAPPDATA%\CorpDictation\runtime`: `corpdictation_whisper.dll`, `libwhisper.dll`, `ggml.dll`, `ggml-base.dll`, `ggml-cpu.dll`, `libc++.dll`, `libunwind.dll`, `libomp.dll`, `libwinpthread-1.dll`
-- `%LOCALAPPDATA%\CorpDictation\models`: Whisper model `.bin` files
-- `%LOCALAPPDATA%\CorpDictation\config\config.json`
-- `%LOCALAPPDATA%\CorpDictation\logs\app.log`
+- runtime root precedence: `CORPDICTATION_ROOT`, then machine-wide Windows root when present, then `%LOCALAPPDATA%\CorpDictation`, then staging fallback for dev / non-Windows CLI flows
+- deployed Windows machine-wide root helper: `%ProgramData%\CorpDictation`
+- runtime root subdirs: `runtime`, `models`, `config`, `logs`
 
 Config:
-- Reads `%LOCALAPPDATA%\CorpDictation\config\config.json`
+- Reads `<resolved runtime root>\config\config.json`
 - Defaults: `language=ru`, `preferred_device=cuda`, `fallback_device=cpu`, `preferred_model=large-v3-turbo-q5_0`, `fallback_model=medium-q5_0`, `cpu_fallback_model=small-q5_1`, `hotkey=Ctrl+Alt+Space`, `auto_paste=true`, `save_audio=false`, `log_transcripts=false`, `beam_size=1`
 
 Implemented now:
@@ -65,7 +64,7 @@ Privacy/runtime behavior:
 - no telemetry
 - no transcript logging
 - no audio retention by default
-- final runtime is intended to work fully offline from `%LOCALAPPDATA%\CorpDictation`
+- final runtime is intended to work fully offline from the resolved runtime root
 
 Linux vs Windows:
 - development environment: Linux

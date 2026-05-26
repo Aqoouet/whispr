@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -61,5 +62,100 @@ func TestLoadPreservesPreferredInputDevice(t *testing.T) {
 	}
 	if cfg.FallbackInputDevice != "HP USB Media Audio" {
 		t.Fatalf("FallbackInputDevice = %q", cfg.FallbackInputDevice)
+	}
+}
+
+func TestResolveRuntimeRootPrefersOverrideOverLocalAppData(t *testing.T) {
+	dir := t.TempDir()
+	root, err := ResolveRuntimeRoot(RootPolicy{
+		Deployment: true,
+		GoOS:       "windows",
+		Getenv: func(key string) string {
+			switch key {
+			case "CORPDICTATION_ROOT":
+				return filepath.Join(dir, "override")
+			case "LOCALAPPDATA":
+				return filepath.Join(dir, "local")
+			case "ProgramData":
+				return filepath.Join(dir, "programdata")
+			default:
+				return ""
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(dir, "override")
+	if root != want {
+		t.Fatalf("root = %q, want %q", root, want)
+	}
+}
+
+func TestResolveRuntimeRootUsesMachineRootWhenPresent(t *testing.T) {
+	dir := t.TempDir()
+	machineRoot := filepath.Join(dir, "programdata", "CorpDictation")
+	if err := os.MkdirAll(machineRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root, err := ResolveRuntimeRoot(RootPolicy{
+		Deployment: true,
+		GoOS:       "windows",
+		Getenv: func(key string) string {
+			switch key {
+			case "ProgramData":
+				return filepath.Join(dir, "programdata")
+			case "LOCALAPPDATA":
+				return filepath.Join(dir, "local")
+			default:
+				return ""
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root != machineRoot {
+		t.Fatalf("root = %q, want %q", root, machineRoot)
+	}
+}
+
+func TestResolveRuntimeRootFallsBackToLocalAppData(t *testing.T) {
+	dir := t.TempDir()
+	root, err := ResolveRuntimeRoot(RootPolicy{
+		Deployment: true,
+		GoOS:       "windows",
+		Getenv: func(key string) string {
+			switch key {
+			case "LOCALAPPDATA":
+				return filepath.Join(dir, "local")
+			case "ProgramData":
+				return filepath.Join(dir, "missing-programdata")
+			default:
+				return ""
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(dir, "local", "CorpDictation")
+	if root != want {
+		t.Fatalf("root = %q, want %q", root, want)
+	}
+}
+
+func TestResolveRuntimeRootUsesStagingFallbackForNonWindowsCLI(t *testing.T) {
+	root, err := ResolveRuntimeRoot(RootPolicy{
+		AllowStagingFallback: true,
+		GoOS:                 "linux",
+		Getenv:               func(string) string { return "" },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join("staging", "windows-localappdata", "CorpDictation")
+	if root != want {
+		t.Fatalf("root = %q, want %q", root, want)
 	}
 }

@@ -31,3 +31,54 @@ func DescribeInputSelection(options Options) string {
 	return fmt.Sprintf("preferred_input_device=%q fallback_input_device=%q",
 		options.PreferredInputDevice, options.FallbackInputDevice)
 }
+
+func normalizeDeviceName(name string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(name))), " ")
+}
+
+func resolveInputDevice(devices []DeviceInfo, defaultDevice DeviceInfo, options Options) (DeviceInfo, string, error) {
+	if preferred := strings.TrimSpace(options.PreferredInputDevice); preferred != "" {
+		if device, ok, mode := findConfiguredDevice(devices, preferred); ok {
+			return device, fmt.Sprintf("preferred_input_device=%q match=%s", device.Name, mode), nil
+		}
+		if fallback := strings.TrimSpace(options.FallbackInputDevice); fallback != "" {
+			if device, ok, mode := findConfiguredDevice(devices, fallback); ok {
+				return device, fmt.Sprintf("fallback_input_device=%q match=%s", device.Name, mode), nil
+			}
+		}
+		return defaultDevice, "system_default", nil
+	}
+	if fallback := strings.TrimSpace(options.FallbackInputDevice); fallback != "" {
+		if device, ok, mode := findConfiguredDevice(devices, fallback); ok {
+			return device, fmt.Sprintf("fallback_input_device=%q match=%s", device.Name, mode), nil
+		}
+		return defaultDevice, "system_default", nil
+	}
+	return defaultDevice, "system_default", nil
+}
+
+func findConfiguredDevice(devices []DeviceInfo, configured string) (DeviceInfo, bool, string) {
+	want := normalizeDeviceName(configured)
+	if want == "" {
+		return DeviceInfo{}, false, ""
+	}
+	exactMatches := make([]DeviceInfo, 0, 2)
+	for _, device := range devices {
+		if normalizeDeviceName(device.Name) == want {
+			exactMatches = append(exactMatches, device)
+		}
+	}
+	if len(exactMatches) == 1 {
+		return exactMatches[0], true, "exact"
+	}
+	matches := make([]DeviceInfo, 0, 2)
+	for _, device := range devices {
+		if strings.Contains(normalizeDeviceName(device.Name), want) {
+			matches = append(matches, device)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], true, "substring"
+	}
+	return DeviceInfo{}, false, ""
+}

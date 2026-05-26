@@ -31,14 +31,6 @@
   5. Copy the resulting Windows executable to the approved Windows launch location.
 - Treat this as the default process unless the user explicitly asks for a different workflow.
 
-## Code Review Delegation Rules
-
-- After writing or modifying code, spawn an OpenAI Codex agent using model `gpt-5.4-medium` to review the changes.
-- The spawned Codex agent reviews either uncommitted changes or the last commit — whichever is relevant.
-- Invoke via `/codex:review` (uncommitted changes) or `/codex:review --commit HEAD` (last commit).
-- The current agent must never skip this review step before committing code changes.
-- Address any CRITICAL or HIGH findings before proceeding.
-
 ## Low-Cost Agent Delegation Rules
 
 - Use a separate low-cost Codex subagent every time for all `whispr` commit, push, and deploy work.

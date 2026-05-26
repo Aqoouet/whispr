@@ -29,22 +29,15 @@
   4. Build on `stressii-wg`.
   5. Deploy with the Windows copy step.
 
-## Code Review Delegation Rules
+## Low-Cost Agent Delegation Rules
 
-- After writing or modifying code, spawn an OpenAI Codex agent using model `gpt-5.4-medium` to review the changes.
-- The spawned Codex agent reviews either uncommitted changes or the last commit — whichever is relevant.
-- Invoke via `/codex:review` (uncommitted changes) or `/codex:review --commit HEAD` (last commit).
-- The current agent must never skip this review step before committing code changes.
-- Address any CRITICAL or HIGH findings before proceeding.
-
-## Haiku Delegation Rules
-
-- Use a separate `haiku` agent (cheapest model) every time for all `whispr` commit, push, and deploy work.
-- The spawned `haiku` agent owns and executes all `whispr` commit, push, and deploy steps.
+- Use a separate low-cost Codex subagent every time for all `whispr` commit, push, and deploy work.
+- In this repo, the default low-cost analogue to Claude `haiku` is the spark model lane, currently `gpt-5.3-codex-spark`.
+- The spawned low-cost subagent owns and executes all `whispr` commit, push, and deploy steps.
 - The current agent must never perform `whispr` commit, push, or deploy work itself, even if the steps seem trivial or already prepared.
-- Use the spawned `haiku` agent every time for deployment verification that confirms `T:\whispr\dictation.exe` matches the latest built executable.
+- Use the spawned low-cost subagent every time for deployment verification that confirms `T:\whispr\dictation.exe` matches the latest built executable.
 - The current agent must never perform that deployment verification itself.
-- Use the spawned `haiku` agent every time to read and summarize recent errors from `C:\Users\rymax1e\AppData\Local\CorpDictation\logs\app.log`.
+- Use the spawned low-cost subagent every time to read and summarize recent errors from `C:\Users\rymax1e\AppData\Local\CorpDictation\logs\app.log`.
 - The current agent must never read or summarize those recent log errors inline.
 
 ## Whispr Deploy Details
@@ -55,7 +48,7 @@
   - `GOOS=windows GOARCH=amd64 go build -o build/dictation.exe ./cmd/dictation`
 - Deploy by copying `R:\whispr\build\dictation.exe` to `T:\whispr\dictation.exe`
 - Launch from `T:\whispr\dictation.exe`
-- After every deploy, the spawned `haiku` agent verifies that `T:\whispr\dictation.exe` matches the latest built executable.
+- After every deploy, the spawned low-cost subagent verifies that `T:\whispr\dictation.exe` matches the latest built executable.
 
 ## Whispr Logs
 

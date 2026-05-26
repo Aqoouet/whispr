@@ -11,14 +11,17 @@ import (
 	"time"
 
 	"github.com/go-ole/go-ole"
+	"github.com/moutend/go-wca/pkg/wca"
 )
 
 type Recorder struct {
-	options Options
-	active  bool
-	stopCh  chan struct{}
-	doneCh  chan struct{}
-	samples []byte
+	options      Options
+	active       bool
+	stopCh       chan struct{}
+	doneCh       chan struct{}
+	samples      []byte
+	captureErr   error
+	activeDetail string
 }
 
 func NewRecorder(o Options) (*Recorder, error) {
@@ -26,7 +29,24 @@ func NewRecorder(o Options) (*Recorder, error) {
 }
 
 func EnumerateDevices(_ Options) ([]DeviceInfo, error) {
-	return []DeviceInfo{{ID: 0, Name: "Default"}}, nil
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if err := ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED); err != nil {
+		if oleErr, ok := err.(*ole.OleError); !ok || oleErr.Code() != 1 {
+			return nil, fmt.Errorf("CoInitializeEx: %w", err)
+		}
+	}
+	defer ole.CoUninitialize()
+
+	var enumerator *wca.IMMDeviceEnumerator
+	if err := wca.CoCreateInstance(
+		wca.CLSID_MMDeviceEnumerator, 0, wca.CLSCTX_ALL,
+		wca.IID_IMMDeviceEnumerator, &enumerator,
+	); err != nil {
+		return nil, fmt.Errorf("create device enumerator: %w", err)
+	}
+	defer enumerator.Release()
+	return enumerateCaptureDevices(enumerator)
 }
 
 func (r *Recorder) Start() error {
@@ -46,7 +66,7 @@ func (r *Recorder) Start() error {
 			}
 		}
 		defer ole.CoUninitialize()
-		sess, err := openWASAPI()
+		sess, err := openWASAPI(r.options)
 		if err != nil {
 			startedCh <- err
 			return
@@ -56,6 +76,7 @@ func (r *Recorder) Start() error {
 			startedCh <- fmt.Errorf("audio client start: %w", err)
 			return
 		}
+		r.activeDetail = fmt.Sprintf("backend=wasapi endpoint=%q", sess.selected.Name)
 		startedCh <- nil
 		ticker := time.NewTicker(10 * time.Millisecond)
 		defer ticker.Stop()
@@ -68,13 +89,20 @@ func (r *Recorder) Start() error {
 				close(r.doneCh)
 				return
 			case <-ticker.C:
-				drainPackets(sess.captureClient, &buf)
+				if err := drainPackets(sess.captureClient, &buf); err != nil {
+					sess.audioClient.Stop()
+					r.samples = buf
+					r.captureErr = err
+					close(r.doneCh)
+					return
+				}
 			}
 		}
 	}()
 	if err := <-startedCh; err != nil {
 		return err
 	}
+	r.captureErr = nil
 	r.active = true
 	return nil
 }
@@ -86,6 +114,9 @@ func (r *Recorder) Stop() (string, error) {
 	close(r.stopCh)
 	<-r.doneCh
 	r.active = false
+	if r.captureErr != nil {
+		return "", fmt.Errorf("capture failed: %w", r.captureErr)
+	}
 	f, err := os.CreateTemp("", "whispr-*.wav")
 	if err != nil {
 		return "", fmt.Errorf("create temp wav: %w", err)
@@ -110,7 +141,7 @@ func EnsureWAVPath(path string) (string, error) {
 }
 
 func (r *Recorder) ActiveBackendDescription() string {
-	return "backend=wasapi"
+	return r.activeDetail
 }
 
 func writeWAV(f *os.File, samples []byte) error {

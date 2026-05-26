@@ -4,8 +4,10 @@ package audio
 
 import (
 	"fmt"
+	"strings"
 	"unsafe"
 
+	"github.com/go-ole/go-ole"
 	"github.com/moutend/go-wca/pkg/wca"
 )
 
@@ -14,6 +16,7 @@ type wasapiSession struct {
 	device        *wca.IMMDevice
 	audioClient   *wca.IAudioClient
 	captureClient *wca.IAudioCaptureClient
+	selected      DeviceInfo
 }
 
 func (s *wasapiSession) release() {
@@ -31,7 +34,7 @@ func (s *wasapiSession) release() {
 	}
 }
 
-func openWASAPI() (*wasapiSession, error) {
+func openWASAPI(options Options) (*wasapiSession, error) {
 	s := &wasapiSession{}
 	if err := wca.CoCreateInstance(
 		wca.CLSID_MMDeviceEnumerator, 0, wca.CLSCTX_ALL,
@@ -39,11 +42,28 @@ func openWASAPI() (*wasapiSession, error) {
 	); err != nil {
 		return nil, fmt.Errorf("create device enumerator: %w", err)
 	}
-	if err := s.enumerator.GetDefaultAudioEndpoint(
-		wca.ECapture, wca.EConsole, &s.device,
-	); err != nil {
+
+	devices, err := enumerateCaptureDevices(s.enumerator)
+	if err != nil {
 		s.release()
-		return nil, fmt.Errorf("get default capture endpoint: %w", err)
+		return nil, err
+	}
+	defaultDevice, err := defaultCaptureDeviceInfo(s.enumerator)
+	if err != nil {
+		s.release()
+		return nil, err
+	}
+	selected, _, err := resolveInputDevice(devices, defaultDevice, options)
+	if err != nil {
+		s.release()
+		return nil, err
+	}
+	s.selected = selected
+
+	s.device, err = openSelectedCaptureDevice(s.enumerator, selected)
+	if err != nil {
+		s.release()
+		return nil, fmt.Errorf("open capture endpoint %q: %w", selected.Name, err)
 	}
 	if err := s.device.Activate(
 		wca.IID_IAudioClient, wca.CLSCTX_ALL, nil, &s.audioClient,
@@ -74,18 +94,124 @@ func openWASAPI() (*wasapiSession, error) {
 	return s, nil
 }
 
-func drainPackets(acc *wca.IAudioCaptureClient, buf *[]byte) {
+func enumerateCaptureDevices(enumerator *wca.IMMDeviceEnumerator) ([]DeviceInfo, error) {
+	var collection *wca.IMMDeviceCollection
+	if err := enumerator.EnumAudioEndpoints(wca.ECapture, wca.DEVICE_STATE_ACTIVE, &collection); err != nil {
+		return nil, fmt.Errorf("enumerate capture endpoints: %w", err)
+	}
+	defer collection.Release()
+
+	var count uint32
+	if err := collection.GetCount(&count); err != nil {
+		return nil, fmt.Errorf("count capture endpoints: %w", err)
+	}
+	devices := make([]DeviceInfo, 0, count)
+	for i := uint32(0); i < count; i++ {
+		var device *wca.IMMDevice
+		if err := collection.Item(i, &device); err != nil {
+			return nil, fmt.Errorf("open capture endpoint #%d: %w", i, err)
+		}
+		info, err := captureDeviceInfo(device, i)
+		device.Release()
+		if err != nil {
+			return nil, err
+		}
+		devices = append(devices, info)
+	}
+	return devices, nil
+}
+
+func defaultCaptureDeviceInfo(enumerator *wca.IMMDeviceEnumerator) (DeviceInfo, error) {
+	var device *wca.IMMDevice
+	if err := enumerator.GetDefaultAudioEndpoint(wca.ECapture, wca.EConsole, &device); err != nil {
+		return DeviceInfo{}, fmt.Errorf("get default capture endpoint: %w", err)
+	}
+	defer device.Release()
+	return captureDeviceInfo(device, 0)
+}
+
+func openSelectedCaptureDevice(enumerator *wca.IMMDeviceEnumerator, selected DeviceInfo) (*wca.IMMDevice, error) {
+	var collection *wca.IMMDeviceCollection
+	if err := enumerator.EnumAudioEndpoints(wca.ECapture, wca.DEVICE_STATE_ACTIVE, &collection); err != nil {
+		return nil, fmt.Errorf("enumerate capture endpoints: %w", err)
+	}
+	defer collection.Release()
+
+	var count uint32
+	if err := collection.GetCount(&count); err != nil {
+		return nil, fmt.Errorf("count capture endpoints: %w", err)
+	}
+	for i := uint32(0); i < count; i++ {
+		var device *wca.IMMDevice
+		if err := collection.Item(i, &device); err != nil {
+			return nil, fmt.Errorf("open capture endpoint #%d: %w", i, err)
+		}
+		id, err := captureEndpointID(device)
+		if err != nil {
+			device.Release()
+			return nil, err
+		}
+		if id == selected.EndpointID {
+			return device, nil
+		}
+		device.Release()
+	}
+	return nil, fmt.Errorf("capture endpoint not found: %q", selected.Name)
+}
+
+func captureDeviceInfo(device *wca.IMMDevice, id uint32) (DeviceInfo, error) {
+	endpointID, err := captureEndpointID(device)
+	if err != nil {
+		return DeviceInfo{}, err
+	}
+	name, err := captureFriendlyName(device)
+	if err != nil {
+		return DeviceInfo{}, err
+	}
+	if name == "" {
+		name = endpointID
+	}
+	return DeviceInfo{ID: id, Name: name, EndpointID: endpointID}, nil
+}
+
+func captureEndpointID(device *wca.IMMDevice) (string, error) {
+	var endpointID string
+	if err := device.GetId(&endpointID); err != nil {
+		return "", fmt.Errorf("read capture endpoint id: %w", err)
+	}
+	return endpointID, nil
+}
+
+func captureFriendlyName(device *wca.IMMDevice) (string, error) {
+	var store *wca.IPropertyStore
+	if err := device.OpenPropertyStore(wca.STGM_READ, &store); err != nil {
+		return "", fmt.Errorf("open capture endpoint property store: %w", err)
+	}
+	defer store.Release()
+
+	var value wca.PROPVARIANT
+	if err := store.GetValue(&wca.PKEY_Device_FriendlyName, &value); err != nil {
+		return "", fmt.Errorf("read capture endpoint friendly name: %w", err)
+	}
+	defer ole.VariantClear(&value.VARIANT)
+	return strings.TrimSpace(value.String()), nil
+}
+
+func drainPackets(acc *wca.IAudioCaptureClient, buf *[]byte) error {
 	for {
 		var frames uint32
-		if err := acc.GetNextPacketSize(&frames); err != nil || frames == 0 {
-			return
+		if err := acc.GetNextPacketSize(&frames); err != nil {
+			return fmt.Errorf("next packet size: %w", err)
+		}
+		if frames == 0 {
+			return nil
 		}
 		var (
 			data  *byte
 			flags uint32
 		)
 		if err := acc.GetBuffer(&data, &frames, &flags, nil, nil); err != nil {
-			return
+			return fmt.Errorf("read packet buffer: %w", err)
 		}
 		if flags&wca.AUDCLNT_BUFFERFLAGS_SILENT == 0 && frames > 0 {
 			n := int(frames) * 2
